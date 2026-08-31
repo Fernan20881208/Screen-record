@@ -15,7 +15,7 @@ sealed interface RootCommand {
     data object WmSize : RootCommand { override val shell = "wm size 2>/dev/null" }
     data object WmDensity : RootCommand { override val shell = "wm density 2>/dev/null" }
     data object AudioFlingerDump : RootCommand { override val shell = "dumpsys media.audio_flinger 2>/dev/null" }
-    data object AudioTools : RootCommand { override val shell = "for x in tinycap tinymix arecord; do command -v $x 2>/dev/null || true; done" }
+    data object AudioTools : RootCommand { override val shell = "for x in tinycap tinymix arecord; do command -v \$x 2>/dev/null || true; done" }
     data class StartScreenrecord(val args: List<String>) : RootCommand {
         override val shell: String = buildString {
             append("exec /system/bin/screenrecord")
