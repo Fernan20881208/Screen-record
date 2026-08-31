@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /** Android 10+ internal playback capture for media/game audio permitted by the source app. */
+@android.annotation.TargetApi(Build.VERSION_CODES.Q)
 class PlaybackCaptureBackend(
     private val context: Context,
     projection: MediaProjection?
