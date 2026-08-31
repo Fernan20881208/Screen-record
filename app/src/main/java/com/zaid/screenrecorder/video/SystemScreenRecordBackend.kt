@@ -1,5 +1,6 @@
 package com.zaid.screenrecorder.video
 
+import android.os.Process
 import android.os.SystemClock
 import com.zaid.screenrecorder.core.RecordingConfig
 import com.zaid.screenrecorder.core.VideoCodec
@@ -32,6 +33,14 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
 
     override fun start(config: RecordingConfig, output: File, logFile: File): VideoCaptureHandle {
         output.parentFile?.mkdirs()
+
+        // Create the destination as the app first. Vendor screenrecord implementations normally
+        // truncate an existing file instead of replacing it, which preserves the app UID and
+        // SELinux label. stop() still repairs ownership as a fallback for implementations that
+        // recreate the file as root.
+        if (output.exists() && !output.delete()) error("Could not replace stale capture file: ${output.absolutePath}")
+        check(output.createNewFile()) { "Could not prepare capture file: ${output.absolutePath}" }
+
         val cli = cli()
         val args = mutableListOf<String>()
         cli.sizeFlag?.let { args += listOf(it, "${config.width}x${config.height}") }
@@ -77,6 +86,13 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
         }
         if (handle.process.isAlive) runCatching { handle.process.destroyForcibly() }
 
+        val ownership = root.execute(RootCommand.PrepareAppFile(handle.videoFile.absolutePath, Process.myUid()), 4)
+        check(ownership.code == 0) {
+            startFailure(handle.logFile, "Could not return captured MP4 ownership to the app: ${ownership.stderr.ifBlank { ownership.stdout }}")
+        }
+        check(handle.videoFile.canRead()) {
+            startFailure(handle.logFile, "Captured MP4 is still not readable by the app after root handoff")
+        }
         check(handle.videoFile.exists() && handle.videoFile.length() > 1024L) {
             startFailure(handle.logFile, "screenrecord did not produce a valid MP4 payload")
         }
