@@ -17,6 +17,11 @@ class AudioCaptureEngine(
         caps.available && caps.internalAudio
     }
 
+    private fun firstMixedBackend(): AudioCaptureBackend? = internalBackends.firstOrNull { backend ->
+        val caps = backend.probe()
+        caps.available && caps.internalAudio && caps.microphone
+    }
+
     fun start(config: RecordingConfig, output: File): AudioSelection {
         return when (config.audioMode) {
             AudioMode.NONE -> AudioSelection(null, null, "Audio disabled")
@@ -24,12 +29,17 @@ class AudioCaptureEngine(
             AudioMode.INTERNAL -> {
                 val backend = firstInternalBackend()
                 if (backend == null) AudioSelection(null, null, "Internal audio unavailable on this ROM without MediaProjection; video will continue without audio")
-                else AudioSelection(backend.start(config, output), backend.id, "Internal root audio backend active")
+                else AudioSelection(backend.start(config, output), backend.id, "Internal audio capture active")
             }
             AudioMode.INTERNAL_AND_MIC -> {
-                val internal = firstInternalBackend()
-                if (internal != null) AudioSelection(internal.start(config, output), internal.id, "Internal backend selected; mixing backend reserved for device profile")
-                else AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Internal audio unavailable; microphone fallback active")
+                val mixed = firstMixedBackend()
+                if (mixed != null) {
+                    AudioSelection(mixed.start(config, output), mixed.id, "Internal audio + microphone software mixer active")
+                } else {
+                    val internal = firstInternalBackend()
+                    if (internal != null) AudioSelection(internal.start(config, output), internal.id, "Mixed capture unavailable; internal audio active")
+                    else AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Internal audio unavailable; microphone fallback active")
+                }
             }
         }
     }
