@@ -3,6 +3,7 @@ package com.zaid.screenrecorder.diagnostics
 import android.content.Context
 import android.os.Build
 import com.zaid.screenrecorder.audio.AudioCaptureEngine
+import com.zaid.screenrecorder.core.AppState
 import com.zaid.screenrecorder.root.RootCommand
 import com.zaid.screenrecorder.root.RootManager
 import com.zaid.screenrecorder.video.DisplayCapabilityDetector
@@ -21,6 +22,7 @@ class DiagnosticsExporter(
     fun export(lastLog: File? = null, lastStats: String? = null): File {
         val dir = File(context.getExternalFilesDir(null), "diagnostics").apply { mkdirs() }
         val out = File(dir, "zaid-screen-recorder-diagnostics.zip")
+        val recordingLog = lastLog ?: File(context.filesDir, "logs/last-screenrecord.log")
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             add(zip, "device.txt", buildString {
                 appendLine("Android=${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
@@ -35,8 +37,13 @@ class DiagnosticsExporter(
             add(zip, "encoders.txt", encoderDetector.detect().encoders.joinToString("\n"))
             add(zip, "screenrecord-help.txt", root.execute(RootCommand.ScreenrecordHelp).let { it.stdout + it.stderr })
             add(zip, "audio-backends.txt", audioEngine.probeInternal().joinToString("\n") { "${it.first}: ${it.second}" })
+            add(zip, "app-state.txt", AppState.recording.value.toString())
             add(zip, "last-stats.txt", lastStats.orEmpty())
-            if (lastLog?.exists() == true) add(zip, "last-recording.log", lastLog.readText().take(512_000))
+            add(
+                zip,
+                "last-recording.log",
+                if (recordingLog.exists()) recordingLog.readText().takeLast(512_000) else "No screenrecord log exists yet"
+            )
         }
         return out
     }
