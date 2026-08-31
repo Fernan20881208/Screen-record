@@ -1,5 +1,9 @@
 package com.zaid.screenrecorder.audio
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
@@ -13,11 +17,16 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
-class MicrophoneBackend : AudioCaptureBackend {
+class MicrophoneBackend(private val context: Context) : AudioCaptureBackend {
     override val id = "microphone"
     override fun probe() = AudioBackendCapabilities(true, internalAudio = false, microphone = true, detail = "Android AudioRecord microphone backend")
 
+    @SuppressLint("MissingPermission") // Guarded explicitly below; lint cannot follow the capture worker thread.
     override fun start(config: RecordingConfig, output: File): AudioCaptureHandle {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            throw SecurityException("RECORD_AUDIO permission is required for microphone capture")
+        }
+
         output.parentFile?.mkdirs()
         val requestedChannels = config.audioChannels.coerceIn(1, 2)
         val stereoMask = AudioFormat.CHANNEL_IN_STEREO
