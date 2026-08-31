@@ -23,6 +23,7 @@ class DiagnosticsExporter(
         val dir = File(context.getExternalFilesDir(null), "diagnostics").apply { mkdirs() }
         val out = File(dir, "zaid-screen-recorder-diagnostics.zip")
         val recordingLog = lastLog ?: File(context.filesDir, "logs/last-screenrecord.log")
+        val audioLog = File(context.filesDir, "logs/last-audio.log")
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             add(zip, "device.txt", buildString {
                 appendLine("Android=${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
@@ -43,6 +44,11 @@ class DiagnosticsExporter(
                 zip,
                 "last-recording.log",
                 if (recordingLog.exists()) recordingLog.readText().takeLast(512_000) else "No screenrecord log exists yet"
+            )
+            add(
+                zip,
+                "last-audio.log",
+                if (audioLog.exists()) audioLog.readText().takeLast(512_000) else "No mixed-audio log exists yet"
             )
         }
         return out
