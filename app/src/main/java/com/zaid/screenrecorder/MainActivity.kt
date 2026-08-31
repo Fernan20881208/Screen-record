@@ -203,7 +203,7 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                         val root = RootManager()
                         val display = DisplayCapabilityDetector(context, root)
                         val enc = EncoderCapabilityDetector()
-                        val audio = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend())
+                        val audio = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend(context))
                         val file = DiagnosticsExporter(context, root, display, enc, audio).export()
                         Toast.makeText(context, "Diagnóstico: ${file.absolutePath}", Toast.LENGTH_LONG).show()
                     }) { Text("Exportar diagnóstico") }
