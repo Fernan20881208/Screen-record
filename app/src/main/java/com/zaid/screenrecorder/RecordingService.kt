@@ -21,6 +21,7 @@ import com.zaid.screenrecorder.audio.AudioFlingerBackend
 import com.zaid.screenrecorder.audio.AudioSelection
 import com.zaid.screenrecorder.audio.MicrophoneBackend
 import com.zaid.screenrecorder.audio.PlaybackCaptureBackend
+import com.zaid.screenrecorder.audio.PlaybackMicMixBackend
 import com.zaid.screenrecorder.audio.RootAudioBackend
 import com.zaid.screenrecorder.audio.VendorAudioBackend
 import com.zaid.screenrecorder.core.AppState
@@ -100,7 +101,7 @@ class RecordingService : Service() {
         val config = RecordingConfig(
             fps = intent.getIntExtra(EXTRA_FPS, 60),
             videoBitrate = intent.getIntExtra(EXTRA_BITRATE, 8_000_000),
-            audioMode = AudioMode.INTERNAL,
+            audioMode = AudioMode.INTERNAL_AND_MIC,
             showOverlay = true
         )
 
@@ -113,16 +114,19 @@ class RecordingService : Service() {
                 return
             }
             try {
+                val foregroundTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                    if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
                 startForeground(
                     NOTIFICATION_ID,
                     notification(config, 0, false, "Preparing…"),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    foregroundTypes
                 )
                 val manager = getSystemService(MediaProjectionManager::class.java)
                 val projection = manager.getMediaProjection(resultCode, projectionData)
                 mediaProjection = projection
                 audioEngine = AudioCaptureEngine(
                     listOf(
+                        PlaybackMicMixBackend(this, projection),
                         PlaybackCaptureBackend(this, projection),
                         RootAudioBackend(root),
                         AudioFlingerBackend(root),
@@ -131,7 +135,7 @@ class RecordingService : Service() {
                     MicrophoneBackend(this)
                 )
             } catch (t: Throwable) {
-                AppState.update(RecordingStatus(false, message = "MediaProjection start failed: ${t.message}"))
+                AppState.update(RecordingStatus(false, message = "MediaProjection/audio start failed: ${t.message}"))
                 runCatching { mediaProjection?.stop() }
                 mediaProjection = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -314,7 +318,7 @@ class RecordingService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_record)
             .setContentTitle("Zaid Screen Recorder · $status")
-            .setContentText("$time · ${config.width}x${config.height} · target ${config.fps} FPS · ${config.videoBitrate / 1_000_000} Mbps · internal audio")
+            .setContentText("$time · ${config.width}x${config.height} · target ${config.fps} FPS · ${config.videoBitrate / 1_000_000} Mbps · internal + mic")
             .setOngoing(true)
             .addAction(Notification.Action.Builder(icon, if (paused) "Resumir" else "Pausar", pauseResumePending).build())
             .addAction(Notification.Action.Builder(icon, "Detener", stopPending).build())
