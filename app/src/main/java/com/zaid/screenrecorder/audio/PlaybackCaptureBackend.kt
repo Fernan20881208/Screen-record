@@ -26,8 +26,9 @@ import kotlin.concurrent.thread
 /** Android 10+ internal playback capture for media/game audio permitted by the source app. */
 class PlaybackCaptureBackend(
     private val context: Context,
-    private val projection: MediaProjection
+    projection: MediaProjection?
 ) : AudioCaptureBackend {
+    private val projection: MediaProjection = requireNotNull(projection) { "MediaProjection permission token was rejected" }
     override val id = "media-projection-playback"
 
     override fun probe(): AudioBackendCapabilities {
