@@ -24,9 +24,9 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
             available = cli.available,
             frameRateControl = controllable,
             supportedFrameRates = if (controllable) candidates else candidates.filter { it <= 60 }.toSet(),
-            supportsHevc = cli.hevc && encoders.supportedFps(VideoCodec.HEVC).isNotEmpty(),
+            supportsHevc = cli.codecFlag != null && cli.hevc && encoders.supportedFps(VideoCodec.HEVC).isNotEmpty(),
             supportsPause = false,
-            detail = if (controllable) "${cli.frameRateFlag} detected" else "screenrecord exposes no explicit FPS flag; >60 FPS is withheld until a backend can verify/control it"
+            detail = if (controllable) "${cli.frameRateFlag} detected; hardware/display intersection=${candidates.sorted()}" else "screenrecord exposes no explicit FPS flag; >60 FPS is withheld until a backend can verify/control it"
         )
     }
 
@@ -34,10 +34,10 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
         output.parentFile?.mkdirs()
         val cli = cli()
         val args = mutableListOf<String>()
-        if (cli.size) args += listOf("--size", "${config.width}x${config.height}")
-        if (cli.bitRate) args += listOf("--bit-rate", config.videoBitrate.toString())
+        cli.sizeFlag?.let { args += listOf(it, "${config.width}x${config.height}") }
+        cli.bitRateFlag?.let { args += listOf(it, config.videoBitrate.toString()) }
         cli.frameRateFlag?.let { args += listOf(it, config.fps.toString()) }
-        if (config.codec == VideoCodec.HEVC && cli.hevc) args += "--codec=hevc"
+        if (config.codec == VideoCodec.HEVC && cli.codecFlag != null && cli.hevc) args += listOf(cli.codecFlag, "hevc")
         args += output.absolutePath
         val process = root.startLongRunning(RootCommand.StartScreenrecord(args), logFile)
         return VideoCaptureHandle(output, process, SystemClock.elapsedRealtimeNanos())

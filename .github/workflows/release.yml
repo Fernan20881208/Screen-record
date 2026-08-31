@@ -1,0 +1,80 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: yes | sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - name: Test and lint
+        run: gradle :app:testDebugUnitTest :app:lintDebug --stacktrace
+      - name: Build signed release or debug fallback
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ] && [ -n "${KEY_PASSWORD:-}" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/zaid-release.jks"
+            gradle :app:assembleRelease --stacktrace \
+              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/zaid-release.jks" \
+              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+            echo "variant=release" >> "$GITHUB_OUTPUT"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Signing secrets are absent; producing debug fallback APKs."
+            gradle :app:assembleDebug --stacktrace
+            echo "variant=debug" >> "$GITHUB_OUTPUT"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Package release assets
+        shell: bash
+        env:
+          VARIANT: ${{ steps.build.outputs.variant }}
+          SIGNED: ${{ steps.build.outputs.signed }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          TAG="${GITHUB_REF_NAME}"
+          for apk in app/build/outputs/apk/${VARIANT}/*.apk; do
+            [ -f "$apk" ] || continue
+            name=$(basename "$apk")
+            abi="${name#app-}"
+            abi="${abi%-${VARIANT}.apk}"
+            if [ "$abi" = "universal" ]; then
+              if [ "$SIGNED" = "true" ]; then out="Zaid-Screen-Recorder-${TAG}-universal.apk"; else out="Zaid-Screen-Recorder-${TAG}-universal-debug.apk"; fi
+            else
+              if [ "$SIGNED" = "true" ]; then out="Zaid-Screen-Recorder-${TAG}-${abi}.apk"; else out="Zaid-Screen-Recorder-${TAG}-${abi}-debug.apk"; fi
+            fi
+            cp "$apk" "dist/$out"
+          done
+          ls -lh dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*.apk
+          fail_on_unmatched_files: true

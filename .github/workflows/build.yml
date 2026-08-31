@@ -1,0 +1,44 @@
+name: Android Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: yes | sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+      - name: Lint
+        run: gradle :app:lintDebug --stacktrace
+      - name: Build APKs
+        run: gradle :app:assembleDebug --stacktrace
+      - name: Collect APKs
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/*.apk dist/
+          universal=$(find dist -maxdepth 1 -name '*universal*debug.apk' | head -n1 || true)
+          if [ -n "$universal" ]; then cp "$universal" "dist/Zaid-Screen-Recorder-v1.0.0-universal-debug.apk"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zaid-Screen-Recorder-v1.0.0-debug
+          path: dist/*.apk
+          if-no-files-found: error

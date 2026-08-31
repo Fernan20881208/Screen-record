@@ -11,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,25 +63,37 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ZaidApp(onStart = { fps ->
-            ContextCompat.startForegroundService(this, Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_START).putExtra(RecordingService.EXTRA_FPS, fps))
-            moveTaskToBack(true)
-        }, onStop = {
-            startService(Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_STOP))
-        }) }
+        setContent {
+            ZaidApp(
+                onStart = { fps, bitrate ->
+                    ContextCompat.startForegroundService(
+                        this,
+                        Intent(this, RecordingService::class.java)
+                            .setAction(RecordingService.ACTION_START)
+                            .putExtra(RecordingService.EXTRA_FPS, fps)
+                            .putExtra(RecordingService.EXTRA_BITRATE, bitrate)
+                    )
+                    moveTaskToBack(true)
+                },
+                onStop = { startService(Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) }
+            )
+        }
     }
 }
 
 private data class UiCapabilities(val root: Boolean, val rootLabel: String, val supportedFps: Set<Int>, val detail: String)
 
 @Composable
-private fun ZaidApp(onStart: (Int) -> Unit, onStop: () -> Unit) {
+private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
     val context = LocalContext.current
     val status by AppState.recording.collectAsState()
     var caps by remember { mutableStateOf<UiCapabilities?>(null) }
-    var selectedFps by remember { mutableStateOf(60) }
+    var selectedFps by remember { mutableIntStateOf(60) }
+    var selectedBitrate by remember { mutableIntStateOf(8_000_000) }
+    var profile by remember { mutableStateOf("Eficiente") }
+
     LaunchedEffect(Unit) {
-        caps = withContext(Dispatchers.IO) {
+        val detected = withContext(Dispatchers.IO) {
             val root = RootManager()
             val state = root.detect()
             if (!state.available) UiCapabilities(false, "Sin root", emptySet(), state.detail)
@@ -87,11 +101,14 @@ private fun ZaidApp(onStart: (Int) -> Unit, onStop: () -> Unit) {
                 val display = DisplayCapabilityDetector(context, root).detect()
                 val encoders = EncoderCapabilityDetector().detect()
                 val backend = SystemScreenRecordBackend(root).probe(display, encoders)
-                val supported = backend.supportedFrameRates.intersect(encoders.supportedFps(com.zaid.screenrecorder.core.VideoCodec.AVC)).intersect(display.refreshCandidates())
+                val supported = backend.supportedFrameRates
+                    .intersect(encoders.supportedFps(com.zaid.screenrecorder.core.VideoCodec.AVC))
+                    .intersect(display.refreshCandidates())
                 UiCapabilities(true, state.implementation.name, supported, backend.detail)
             }
         }
-        if (selectedFps !in (caps?.supportedFps ?: emptySet())) selectedFps = listOf(120, 90, 60, 30).firstOrNull { it in (caps?.supportedFps ?: emptySet()) } ?: 60
+        caps = detected
+        if (selectedFps !in detected.supportedFps) selectedFps = listOf(120, 90, 60, 30).firstOrNull { it in detected.supportedFps } ?: 60
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
@@ -100,17 +117,18 @@ private fun ZaidApp(onStart: (Int) -> Unit, onStop: () -> Unit) {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Spacer(Modifier.height(16.dp))
                 Text("Zaid Screen Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(if (status.active) "${status.effectiveConfig.width}p · target ${status.effectiveConfig.fps} FPS · grabando" else "720p · $selectedFps FPS · Audio interno", color = Color.White.copy(alpha = .72f))
+                Text(if (status.active) "${status.effectiveConfig.height}p · target ${status.effectiveConfig.fps} FPS · grabando" else "720p · $selectedFps FPS · Audio interno", color = Color.White.copy(alpha = .72f))
 
-                val c = caps
-                if (c != null && !c.root) GlassCard { Text("Zaid Screen Recorder requiere acceso root para utilizar su motor de captura avanzado.", color = Color(0xFFFFB4AB)) }
-                if (c != null) GlassCard {
-                    Text("ROOT · ${c.rootLabel}", fontWeight = FontWeight.SemiBold)
-                    Text(c.detail, color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.bodySmall)
+                caps?.let { c ->
+                    if (!c.root) GlassCard { Text("Zaid Screen Recorder requiere acceso root para utilizar su motor de captura avanzado.", color = Color(0xFFFFB4AB)) }
+                    GlassCard {
+                        Text("ROOT · ${c.rootLabel}", fontWeight = FontWeight.SemiBold)
+                        Text(c.detail, color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
 
                 Button(
-                    onClick = { if (status.active) onStop() else onStart(selectedFps) },
+                    onClick = { if (status.active) onStop() else onStart(selectedFps, selectedBitrate) },
                     enabled = caps?.root == true,
                     modifier = Modifier.fillMaxWidth().height(86.dp),
                     shape = RoundedCornerShape(28.dp),
@@ -118,15 +136,27 @@ private fun ZaidApp(onStart: (Int) -> Unit, onStop: () -> Unit) {
                 ) { Text(if (status.active) "■ DETENER" else "● GRABAR", fontWeight = FontWeight.Bold) }
 
                 GlassCard {
+                    Text("Perfiles", fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { profile = "Eficiente"; selectedFps = if (60 in (caps?.supportedFps ?: emptySet())) 60 else 30; selectedBitrate = 8_000_000 }, enabled = !status.active) { Text("Eficiente") }
+                        if (120 in (caps?.supportedFps ?: emptySet())) {
+                            Button(onClick = { profile = "Calidad"; selectedFps = 120; selectedBitrate = 12_000_000 }, enabled = !status.active) { Text("Calidad") }
+                            Button(onClick = { profile = "Ultra"; selectedFps = 120; selectedBitrate = 19_000_000 }, enabled = !status.active) { Text("Ultra") }
+                        }
+                    }
+                    Text("Activo: $profile", color = Color.White.copy(alpha = .6f), style = MaterialTheme.typography.bodySmall)
+                }
+
+                GlassCard {
                     Text("FPS", fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(30, 60, 90, 120).filter { it in (caps?.supportedFps ?: setOf(30, 60)) }.forEach { fps ->
-                            Button(onClick = { selectedFps = fps }, enabled = !status.active, colors = ButtonDefaults.buttonColors(containerColor = if (fps == selectedFps) Color(0xFF5B77FF) else Color.White.copy(alpha = .10f))) { Text("$fps") }
+                            Button(onClick = { profile = "Personalizado"; selectedFps = fps }, enabled = !status.active, colors = ButtonDefaults.buttonColors(containerColor = if (fps == selectedFps) Color(0xFF5B77FF) else Color.White.copy(alpha = .10f))) { Text("$fps") }
                         }
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MiniCard("Resolución", "1280×720", Modifier.weight(1f)); MiniCard("Bitrate", "8 Mbps", Modifier.weight(1f))
+                    MiniCard("Resolución", "1280×720", Modifier.weight(1f)); MiniCard("Bitrate", "${selectedBitrate / 1_000_000} Mbps", Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz", Modifier.weight(1f))
@@ -137,7 +167,10 @@ private fun ZaidApp(onStart: (Int) -> Unit, onStop: () -> Unit) {
                     Text("Ajustes", fontWeight = FontWeight.Bold)
                     Text("Game Recording Mode activo · Liquid Glass se reduce automáticamente durante la grabación · overlay desactivado por defecto.", color = Color.White.copy(alpha = .65f))
                     Button(onClick = {
-                        val root = RootManager(); val display = DisplayCapabilityDetector(context, root); val enc = EncoderCapabilityDetector(); val audio = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend())
+                        val root = RootManager()
+                        val display = DisplayCapabilityDetector(context, root)
+                        val enc = EncoderCapabilityDetector()
+                        val audio = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend())
                         val file = DiagnosticsExporter(context, root, display, enc, audio).export()
                         Toast.makeText(context, "Diagnóstico: ${file.absolutePath}", Toast.LENGTH_LONG).show()
                     }) { Text("Exportar diagnóstico") }
@@ -148,11 +181,17 @@ private fun ZaidApp(onStart: (Int) -> Unit, onStop: () -> Unit) {
 }
 
 @Composable
-private fun GlassCard(modifier: Modifier = Modifier, content: @Composable Column.() -> Unit) {
-    Surface(modifier = modifier.fillMaxWidth().border(1.dp, Color.White.copy(alpha = .10f), RoundedCornerShape(24.dp)).animateContentSize(), shape = RoundedCornerShape(24.dp), color = Color(0xAA1A2030), tonalElevation = 6.dp) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp), content = content)
-    }
+private fun GlassCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        modifier = modifier.fillMaxWidth().border(1.dp, Color.White.copy(alpha = .10f), RoundedCornerShape(24.dp)).animateContentSize(),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xAA1A2030),
+        tonalElevation = 6.dp
+    ) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp), content = content) }
 }
 
 @Composable
-private fun MiniCard(title: String, value: String, modifier: Modifier = Modifier) = GlassCard(modifier) { Text(title, color = Color.White.copy(alpha = .6f), style = MaterialTheme.typography.labelMedium); Text(value, fontWeight = FontWeight.Bold) }
+private fun MiniCard(title: String, value: String, modifier: Modifier = Modifier) = GlassCard(modifier) {
+    Text(title, color = Color.White.copy(alpha = .6f), style = MaterialTheme.typography.labelMedium)
+    Text(value, fontWeight = FontWeight.Bold)
+}
