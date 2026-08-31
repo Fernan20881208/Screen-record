@@ -70,7 +70,7 @@ class RecordingService : Service() {
         val encoders = EncoderCapabilityDetector()
         val systemBackend = SystemScreenRecordBackend(root)
         videoEngine = ScreenRecordEngine(display, encoders, listOf(systemBackend, NativeRootBackend()))
-        audioEngine = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend())
+        audioEngine = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend(this))
         overlay = RecordingOverlay(this)
         createChannel()
     }
