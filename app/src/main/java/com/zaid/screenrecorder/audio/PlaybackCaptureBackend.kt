@@ -20,12 +20,10 @@ import android.os.SystemClock
 import com.zaid.screenrecorder.core.RecordingConfig
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
-/**
- * Android 10+ internal playback capture. This is the supported Android path for recording
- * USAGE_MEDIA / USAGE_GAME / USAGE_UNKNOWN from apps that allow playback capture.
- */
+/** Android 10+ internal playback capture for media/game audio permitted by the source app. */
 class PlaybackCaptureBackend(
     private val context: Context,
     private val projection: MediaProjection
@@ -46,7 +44,7 @@ class PlaybackCaptureBackend(
         )
     }
 
-    @SuppressLint("MissingPermission") // Guarded explicitly before AudioRecord.Builder.
+    @SuppressLint("MissingPermission")
     override fun start(config: RecordingConfig, output: File): AudioCaptureHandle {
         check(Build.VERSION.SDK_INT >= 29) { "Internal playback capture requires Android 10+" }
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -95,6 +93,7 @@ class PlaybackCaptureBackend(
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         val running = AtomicBoolean(true)
         val projectionStopped = AtomicBoolean(false)
+        val failure = AtomicReference<Throwable?>(null)
         val startedNs = SystemClock.elapsedRealtimeNanos()
         val callback = object : MediaProjection.Callback() {
             override fun onStop() {
@@ -173,17 +172,21 @@ class PlaybackCaptureBackend(
                         }
                     }
                 }
+            } catch (t: Throwable) {
+                failure.compareAndSet(null, t)
             } finally {
                 runCatching { record.stop() }
-                record.release()
+                runCatching { record.release() }
                 runCatching { codec.stop() }
-                codec.release()
+                runCatching { codec.release() }
                 if (muxerStarted) {
-                    muxer.stop()
-                    muxerStopped = true
+                    runCatching { muxer.stop() }
+                        .onSuccess { muxerStopped = true }
+                        .onFailure { failure.compareAndSet(null, it) }
                 }
-                muxer.release()
-                if (!muxerStopped || !output.exists() || output.length() <= 1024L) {
+                runCatching { muxer.release() }
+                    .onFailure { failure.compareAndSet(null, it) }
+                if (!muxerStopped || failure.get() != null || !output.exists() || output.length() <= 1024L) {
                     output.delete()
                 }
             }
@@ -196,8 +199,9 @@ class PlaybackCaptureBackend(
                 runCatching { record.stop() }
                 worker.join(2_000)
             }
-            projection.unregisterCallback(callback)
+            runCatching { projection.unregisterCallback(callback) }
             check(!worker.isAlive) { "Internal audio encoder did not stop cleanly" }
+            failure.get()?.let { throw IllegalStateException("Internal audio encode failed: ${it.message}", it) }
             check(output.exists() && output.length() > 1024L) {
                 if (projectionStopped.get()) "MediaProjection stopped before internal audio could be finalized"
                 else "Internal audio capture did not produce a valid AAC track"
