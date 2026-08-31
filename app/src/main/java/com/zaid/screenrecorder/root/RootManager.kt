@@ -44,6 +44,18 @@ sealed interface RootCommand {
         }
     }
 
+    data class PrepareAppFile(val path: String, val uid: Int) : RootCommand {
+        override val shell: String = buildString {
+            val quoted = shellQuote(path)
+            append("test -f ").append(quoted)
+            append(" && chown ").append(uid).append(':').append(uid).append(' ').append(quoted)
+            append(" && chmod 600 ").append(quoted)
+            append(" && { restorecon -F ").append(quoted).append(" 2>/dev/null || restorecon ").append(quoted).append(" 2>/dev/null || true; }")
+            append(" && chown ").append(uid).append(':').append(uid).append(' ').append(quoted)
+            append(" && chmod 600 ").append(quoted)
+        }
+    }
+
     data class RemoveRootFile(val path: String) : RootCommand {
         override val shell: String = "rm -f ${shellQuote(path)}"
     }
