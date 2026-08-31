@@ -11,45 +11,64 @@ import java.nio.ByteBuffer
 class MuxerEngine {
     fun mux(video: File, audio: File?, output: File, videoStartNs: Long, audioStartNs: Long?): File {
         output.parentFile?.mkdirs()
-        if (audio == null || !audio.exists() || audio.length() == 0L) {
-            video.inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
-            return output
+        check(isPlayable(video)) { "Raw screenrecord MP4 has no readable video samples" }
+
+        if (audio == null || !audio.exists() || audio.length() == 0L || !hasTrack(audio, "audio/")) {
+            return copyValidated(video, output)
         }
-        val videoExtractor = MediaExtractor().apply { setDataSource(video.absolutePath) }
-        val audioExtractor = MediaExtractor().apply { setDataSource(audio.absolutePath) }
-        val vSource = findTrack(videoExtractor, "video/")
-        val aSource = findTrack(audioExtractor, "audio/")
-        check(vSource >= 0) { "No video track found" }
-        if (aSource < 0) {
-            videoExtractor.release(); audioExtractor.release()
-            video.inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
-            return output
+
+        if (output.exists()) output.delete()
+        val videoExtractor = MediaExtractor()
+        val audioExtractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+        var muxerStopped = false
+        try {
+            videoExtractor.setDataSource(video.absolutePath)
+            audioExtractor.setDataSource(audio.absolutePath)
+            val vSource = findTrack(videoExtractor, "video/")
+            val aSource = findTrack(audioExtractor, "audio/")
+            check(vSource >= 0) { "No video track found in raw capture" }
+            check(aSource >= 0) { "No AAC audio track found in internal-audio capture" }
+
+            videoExtractor.selectTrack(vSource)
+            audioExtractor.selectTrack(aSource)
+
+            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            readRotation(video)?.takeIf { it in setOf(90, 180, 270) }?.let(muxer::setOrientationHint)
+            val vTarget = muxer.addTrack(videoExtractor.getTrackFormat(vSource))
+            val aTarget = muxer.addTrack(audioExtractor.getTrackFormat(aSource))
+            muxer.start()
+            muxerStarted = true
+
+            val sessionStartNs = minOf(videoStartNs, audioStartNs ?: videoStartNs)
+            copySelectedTrack(videoExtractor, muxer, vTarget, (videoStartNs - sessionStartNs) / 1_000L)
+            copySelectedTrack(audioExtractor, muxer, aTarget, ((audioStartNs ?: sessionStartNs) - sessionStartNs) / 1_000L)
+
+            muxer.stop()
+            muxerStopped = true
+        } catch (t: Throwable) {
+            output.delete()
+            throw IllegalStateException("MP4 mux failed: ${t.message}", t)
+        } finally {
+            if (muxerStarted && !muxerStopped) runCatching { muxer?.stop() }
+            runCatching { muxer?.release() }
+            videoExtractor.release()
+            audioExtractor.release()
         }
-        videoExtractor.selectTrack(vSource)
-        audioExtractor.selectTrack(aSource)
-        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        readRotation(video)?.takeIf { it in setOf(90, 180, 270) }?.let(muxer::setOrientationHint)
-        val vTarget = muxer.addTrack(videoExtractor.getTrackFormat(vSource))
-        val aTarget = muxer.addTrack(audioExtractor.getTrackFormat(aSource))
-        muxer.start()
-        val sessionStartNs = minOf(videoStartNs, audioStartNs ?: videoStartNs)
-        copySelectedTrack(videoExtractor, muxer, vTarget, (videoStartNs - sessionStartNs) / 1_000L)
-        copySelectedTrack(audioExtractor, muxer, aTarget, ((audioStartNs ?: sessionStartNs) - sessionStartNs) / 1_000L)
-        runCatching { muxer.stop() }
-        muxer.release()
-        videoExtractor.release()
-        audioExtractor.release()
+
+        check(isPlayable(output)) {
+            output.delete()
+            "Muxer produced an MP4 without readable video samples"
+        }
         return output
     }
 
     fun concatenate(segments: List<File>, output: File): File {
-        val valid = segments.filter { it.exists() && it.length() > 0L }
-        check(valid.isNotEmpty()) { "No completed recording segments" }
+        val valid = segments.filter { isPlayable(it) }
+        check(valid.isNotEmpty()) { "No playable recording segments" }
         output.parentFile?.mkdirs()
-        if (valid.size == 1) {
-            valid.first().inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
-            return output
-        }
+        if (valid.size == 1) return copyValidated(valid.first(), output)
 
         val first = MediaExtractor().apply { setDataSource(valid.first().absolutePath) }
         val firstVideo = findTrack(first, "video/")
@@ -59,25 +78,85 @@ class MuxerEngine {
         val audioFormat = if (firstAudio >= 0) first.getTrackFormat(firstAudio) else null
         first.release()
 
+        if (output.exists()) output.delete()
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        readRotation(valid.first())?.takeIf { it in setOf(90, 180, 270) }?.let(muxer::setOrientationHint)
-        val videoTarget = muxer.addTrack(videoFormat)
-        val audioTarget = audioFormat?.let(muxer::addTrack)
-        muxer.start()
+        var started = false
+        var stopped = false
+        try {
+            readRotation(valid.first())?.takeIf { it in setOf(90, 180, 270) }?.let(muxer::setOrientationHint)
+            val videoTarget = muxer.addTrack(videoFormat)
+            val audioTarget = audioFormat?.let(muxer::addTrack)
+            muxer.start()
+            started = true
 
-        var timelineUs = 0L
-        valid.forEach { segment ->
-            val videoBounds = trackBounds(segment, "video/")
-            val audioBounds = if (audioTarget != null) trackBounds(segment, "audio/") else null
-            val firstPts = listOfNotNull(videoBounds?.first, audioBounds?.first).minOrNull() ?: 0L
-            val lastPts = listOfNotNull(videoBounds?.second, audioBounds?.second).maxOrNull() ?: firstPts
-            appendTrack(segment, "video/", muxer, videoTarget, firstPts, timelineUs)
-            if (audioTarget != null) appendTrack(segment, "audio/", muxer, audioTarget, firstPts, timelineUs)
-            timelineUs += (lastPts - firstPts + 1L).coerceAtLeast(1L)
+            var timelineUs = 0L
+            valid.forEach { segment ->
+                val videoBounds = trackBounds(segment, "video/")
+                    ?: error("Segment ${segment.name} has no video samples")
+                val audioBounds = if (audioTarget != null) trackBounds(segment, "audio/") else null
+                val firstPts = listOfNotNull(videoBounds.first, audioBounds?.first).minOrNull() ?: videoBounds.first
+                val lastPts = listOfNotNull(videoBounds.second, audioBounds?.second).maxOrNull() ?: videoBounds.second
+                appendTrack(segment, "video/", muxer, videoTarget, firstPts, timelineUs)
+                if (audioTarget != null && audioBounds != null) {
+                    appendTrack(segment, "audio/", muxer, audioTarget, firstPts, timelineUs)
+                }
+                timelineUs += (lastPts - firstPts + 1L).coerceAtLeast(1L)
+            }
+
+            muxer.stop()
+            stopped = true
+        } catch (t: Throwable) {
+            output.delete()
+            throw IllegalStateException("Segment concatenation failed: ${t.message}", t)
+        } finally {
+            if (started && !stopped) runCatching { muxer.stop() }
+            runCatching { muxer.release() }
         }
 
-        runCatching { muxer.stop() }
-        muxer.release()
+        check(isPlayable(output)) {
+            output.delete()
+            "Concatenation produced an invalid MP4"
+        }
+        return output
+    }
+
+    fun isPlayable(file: File): Boolean {
+        if (!file.exists() || file.length() <= 1024L) return false
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            val videoTrack = findTrack(extractor, "video/")
+            if (videoTrack < 0) return false
+            extractor.selectTrack(videoTrack)
+            val probe = ByteBuffer.allocate(4 * 1024 * 1024)
+            extractor.readSampleData(probe, 0) > 0 && extractor.sampleTime >= 0L
+        } catch (_: Throwable) {
+            false
+        } finally {
+            extractor.release()
+        }
+    }
+
+    private fun hasTrack(file: File, prefix: String): Boolean {
+        if (!file.exists() || file.length() <= 0L) return false
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            findTrack(extractor, prefix) >= 0
+        } catch (_: Throwable) {
+            false
+        } finally {
+            extractor.release()
+        }
+    }
+
+    private fun copyValidated(source: File, output: File): File {
+        if (output.exists()) output.delete()
+        source.inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
+        check(isPlayable(output)) {
+            output.delete()
+            "Copied MP4 failed playback validation"
+        }
         return output
     }
 
@@ -96,14 +175,16 @@ class MuxerEngine {
     } ?: -1
 
     private fun copySelectedTrack(extractor: MediaExtractor, muxer: MediaMuxer, targetTrack: Int, offsetUs: Long) {
-        val buffer = ByteBuffer.allocate(4 * 1024 * 1024)
+        val buffer = ByteBuffer.allocate(8 * 1024 * 1024)
         val info = MediaCodec.BufferInfo()
         var firstPts = -1L
+        var samples = 0L
         while (true) {
             buffer.clear()
             val size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
             val pts = extractor.sampleTime
+            if (pts < 0) break
             if (firstPts < 0) firstPts = pts
             info.set(
                 0,
@@ -112,8 +193,10 @@ class MuxerEngine {
                 extractorFlagsToCodecFlags(extractor.sampleFlags)
             )
             muxer.writeSampleData(targetTrack, buffer, info)
-            extractor.advance()
+            samples++
+            if (!extractor.advance()) break
         }
+        check(samples > 0L) { "Track contained no media samples" }
     }
 
     private fun trackBounds(file: File, prefix: String): Pair<Long, Long>? {
@@ -142,17 +225,22 @@ class MuxerEngine {
             val index = findTrack(extractor, prefix)
             if (index < 0) return
             extractor.selectTrack(index)
-            val buffer = ByteBuffer.allocate(4 * 1024 * 1024)
+            val buffer = ByteBuffer.allocate(8 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
+            var samples = 0L
             while (true) {
                 buffer.clear()
                 val size = extractor.readSampleData(buffer, 0)
                 if (size < 0) break
-                val pts = (extractor.sampleTime - segmentFirstPts).coerceAtLeast(0L) + timelineUs
+                val sampleTime = extractor.sampleTime
+                if (sampleTime < 0) break
+                val pts = (sampleTime - segmentFirstPts).coerceAtLeast(0L) + timelineUs
                 info.set(0, size, pts, extractorFlagsToCodecFlags(extractor.sampleFlags))
                 muxer.writeSampleData(targetTrack, buffer, info)
-                extractor.advance()
+                samples++
+                if (!extractor.advance()) break
             }
+            check(samples > 0L) { "Segment track $prefix contained no samples" }
         } finally {
             extractor.release()
         }
