@@ -52,6 +52,9 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
 
         val pidFile = File(output.parentFile ?: logFile.parentFile, ".${output.name}.pid")
         val command = RootCommand.StartScreenrecord(args, pidFile.absolutePath)
+        // Timestamp the actual launch, not the later health-check completion. The old code stamped
+        // this after a 900 ms wait, which created a fake ~1 s video delay during A/V muxing.
+        val startedNs = SystemClock.elapsedRealtimeNanos()
         val process = root.startLongRunning(command, logFile)
 
         if (process.waitFor(900, TimeUnit.MILLISECONDS)) {
@@ -65,7 +68,7 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
             error(startFailure(logFile, "root screenrecord PID was not alive after startup"))
         }
 
-        return VideoCaptureHandle(output, process, SystemClock.elapsedRealtimeNanos(), pidFile, logFile)
+        return VideoCaptureHandle(output, process, startedNs, pidFile, logFile)
     }
 
     override fun stop(handle: VideoCaptureHandle) {
