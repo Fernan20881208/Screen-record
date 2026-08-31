@@ -12,7 +12,13 @@ data class VideoBackendCapabilities(
     val detail: String
 )
 
-data class VideoCaptureHandle(val videoFile: File, val process: Process, val startedNs: Long)
+data class VideoCaptureHandle(
+    val videoFile: File,
+    val process: Process,
+    val startedNs: Long,
+    val pidFile: File? = null,
+    val logFile: File? = null
+)
 
 interface VideoCaptureBackend {
     val id: String
