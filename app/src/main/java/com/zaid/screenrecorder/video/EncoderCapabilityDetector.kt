@@ -1,6 +1,5 @@
 package com.zaid.screenrecorder.video
 
-import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
 import com.zaid.screenrecorder.core.VideoCodec
@@ -22,22 +21,23 @@ data class EncoderCapabilities(val encoders: List<EncoderInfo>) {
 
 class EncoderCapabilityDetector {
     fun detect(): EncoderCapabilities {
-        val infos = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
-        val result = buildList {
-            infos.filter { it.isEncoder }.forEach { info ->
-                info.supportedTypes.filter { it.equals("video/avc", true) || it.equals("video/hevc", true) }.forEach { mime ->
-                    val video = runCatching { info.getCapabilitiesForType(mime).videoCapabilities }.getOrNull() ?: return@forEach
-                    val fps = listOf(30, 60, 90, 120).filter { rate ->
-                        runCatching { video.areSizeAndRateSupported(1280, 720, rate.toDouble()) }.getOrDefault(false)
-                    }.toSet()
-                    add(EncoderInfo(
-                        name = info.name,
-                        mime = mime,
-                        hardwareAccelerated = if (Build.VERSION.SDK_INT >= 29) info.isHardwareAccelerated else !info.name.lowercase().contains("google") && !info.name.lowercase().contains("ffmpeg"),
-                        softwareOnly = if (Build.VERSION.SDK_INT >= 29) info.isSoftwareOnly else false,
-                        supported720pFps = fps
-                    ))
-                }
+        val result = mutableListOf<EncoderInfo>()
+        for (info in MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos) {
+            if (!info.isEncoder) continue
+            for (mime in info.supportedTypes) {
+                if (!mime.equals("video/avc", true) && !mime.equals("video/hevc", true)) continue
+                val video = runCatching { info.getCapabilitiesForType(mime).videoCapabilities }.getOrNull() ?: continue
+                val fps = listOf(30, 60, 90, 120).filter { rate ->
+                    runCatching { video.areSizeAndRateSupported(1280, 720, rate.toDouble()) }.getOrDefault(false)
+                }.toSet()
+                val nameLower = info.name.lowercase()
+                result += EncoderInfo(
+                    name = info.name,
+                    mime = mime,
+                    hardwareAccelerated = if (Build.VERSION.SDK_INT >= 29) info.isHardwareAccelerated else !nameLower.contains("google") && !nameLower.contains("ffmpeg"),
+                    softwareOnly = if (Build.VERSION.SDK_INT >= 29) info.isSoftwareOnly else false,
+                    supported720pFps = fps
+                )
             }
         }
         return EncoderCapabilities(result)

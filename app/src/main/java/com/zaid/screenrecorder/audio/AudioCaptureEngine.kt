@@ -12,17 +12,22 @@ class AudioCaptureEngine(
 ) {
     fun probeInternal(): List<Pair<String, AudioBackendCapabilities>> = internalBackends.map { it.id to it.probe() }
 
+    private fun firstInternalBackend(): AudioCaptureBackend? = internalBackends.firstOrNull { backend ->
+        val caps = backend.probe()
+        caps.available && caps.internalAudio
+    }
+
     fun start(config: RecordingConfig, output: File): AudioSelection {
         return when (config.audioMode) {
             AudioMode.NONE -> AudioSelection(null, null, "Audio disabled")
             AudioMode.MICROPHONE -> AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Microphone capture active")
             AudioMode.INTERNAL -> {
-                val backend = internalBackends.firstOrNull { it.probe().available && it.probe().internalAudio }
+                val backend = firstInternalBackend()
                 if (backend == null) AudioSelection(null, null, "Internal audio unavailable on this ROM without MediaProjection; video will continue without audio")
                 else AudioSelection(backend.start(config, output), backend.id, "Internal root audio backend active")
             }
             AudioMode.INTERNAL_AND_MIC -> {
-                val internal = internalBackends.firstOrNull { it.probe().available && it.probe().internalAudio }
+                val internal = firstInternalBackend()
                 if (internal != null) AudioSelection(internal.start(config, output), internal.id, "Internal backend selected; mixing backend reserved for device profile")
                 else AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Internal audio unavailable; microphone fallback active")
             }

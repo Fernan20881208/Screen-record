@@ -18,10 +18,11 @@ class ScreenRecordEngine(
         val candidate = backends.map { it to it.probe(display, encoders) }.firstOrNull { it.second.available }
             ?: error("No video capture backend is available")
         val (backend, caps) = candidate
-        val encoderSupported = encoders.supportedFps(requested.codec, hardwareOnly = true)
-        val safe = caps.supportedFrameRates.intersect(encoderSupported).intersect(display.refreshCandidates())
-        val fps = FpsPolicy.fallback(requested.fps, safe) ?: error("No hardware-backed FPS candidate is supported for ${requested.width}x${requested.height}")
         val codec = if (requested.codec == VideoCodec.HEVC && !caps.supportsHevc) VideoCodec.AVC else requested.codec
+        val encoderSupported = encoders.supportedFps(codec, hardwareOnly = true)
+        val safe = caps.supportedFrameRates.intersect(encoderSupported).intersect(display.refreshCandidates())
+        val fps = FpsPolicy.fallback(requested.fps, safe)
+            ?: error("No hardware-backed FPS candidate is supported for ${requested.width}x${requested.height} with $codec")
         val effective = requested.copy(fps = fps, codec = codec)
         val reason = buildString {
             if (fps != requested.fps) append("FPS fallback ${requested.fps} -> $fps. ")
