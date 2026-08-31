@@ -1,11 +1,14 @@
 package com.zaid.screenrecorder
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -40,9 +43,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -66,14 +71,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             ZaidApp(
                 onStart = { fps, bitrate ->
-                    ContextCompat.startForegroundService(
-                        this,
-                        Intent(this, RecordingService::class.java)
-                            .setAction(RecordingService.ACTION_START)
-                            .putExtra(RecordingService.EXTRA_FPS, fps)
-                            .putExtra(RecordingService.EXTRA_BITRATE, bitrate)
-                    )
-                    moveTaskToBack(true)
+                    if (!Settings.canDrawOverlays(this)) {
+                        Toast.makeText(this, "Permite Mostrar sobre otras apps para usar los controles flotantes.", Toast.LENGTH_LONG).show()
+                        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                    } else {
+                        ContextCompat.startForegroundService(
+                            this,
+                            Intent(this, RecordingService::class.java)
+                                .setAction(RecordingService.ACTION_START)
+                                .putExtra(RecordingService.EXTRA_FPS, fps)
+                                .putExtra(RecordingService.EXTRA_BITRATE, bitrate)
+                        )
+                        moveTaskToBack(true)
+                    }
                 },
                 onStop = { startService(Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) }
             )
@@ -116,8 +126,24 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
             Box(Modifier.size(300.dp).align(Alignment.TopEnd).blur(if (status.active) 0.dp else 80.dp).background(Color(0x554D7CFE), CircleShape))
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Spacer(Modifier.height(16.dp))
-                Text("Zaid Screen Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(if (status.active) "${status.effectiveConfig.height}p · target ${status.effectiveConfig.fps} FPS · grabando" else "720p · $selectedFps FPS · Audio interno", color = Color.White.copy(alpha = .72f))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Image(
+                        painter = painterResource(R.drawable.zaid_logo),
+                        contentDescription = "Zaid Screen Recorder",
+                        modifier = Modifier.size(58.dp).clip(CircleShape)
+                    )
+                    Column {
+                        Text("Zaid Screen Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            when {
+                                status.paused -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · PAUSA"
+                                status.active -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · grabando"
+                                else -> "720p · $selectedFps FPS · Audio interno"
+                            },
+                            color = Color.White.copy(alpha = .72f)
+                        )
+                    }
+                }
 
                 caps?.let { c ->
                     if (!c.root) GlassCard { Text("Zaid Screen Recorder requiere acceso root para utilizar su motor de captura avanzado.", color = Color(0xFFFFB4AB)) }
@@ -164,8 +190,15 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                 GlassCard { Text("Grabaciones", fontWeight = FontWeight.Bold); Text("Los MP4 finalizados se guardan en la carpeta de la app y se indexan con MediaScanner.", color = Color.White.copy(alpha = .65f)) }
                 GlassCard { Text("Estadísticas", fontWeight = FontWeight.Bold); Text(status.message ?: "Al finalizar se calculan FPS promedio y mínimo a partir de timestamps reales del MP4; dropped frames sólo se muestran si el backend reporta un contador verificable.", color = Color.White.copy(alpha = .65f)) }
                 GlassCard {
+                    Text("Overlay Liquid Glass", fontWeight = FontWeight.Bold)
+                    Text("Activado por defecto. Incluye logo, tiempo, pausar, resumir y terminar. Puedes arrastrarlo y recuerda su última posición. La pausa usa segmentos para no depender de funciones inexistentes de screenrecord.", color = Color.White.copy(alpha = .65f))
+                    if (!Settings.canDrawOverlays(context)) {
+                        Button(onClick = { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) }) { Text("Permitir overlay") }
+                    }
+                }
+                GlassCard {
                     Text("Ajustes", fontWeight = FontWeight.Bold)
-                    Text("Game Recording Mode activo · Liquid Glass se reduce automáticamente durante la grabación · overlay desactivado por defecto.", color = Color.White.copy(alpha = .65f))
+                    Text("Game Recording Mode activo · Liquid Glass se simplifica durante la grabación para priorizar el juego.", color = Color.White.copy(alpha = .65f))
                     Button(onClick = {
                         val root = RootManager()
                         val display = DisplayCapabilityDetector(context, root)
