@@ -16,11 +16,36 @@ sealed interface RootCommand {
     data object WmDensity : RootCommand { override val shell = "wm density 2>/dev/null" }
     data object AudioFlingerDump : RootCommand { override val shell = "dumpsys media.audio_flinger 2>/dev/null" }
     data object AudioTools : RootCommand { override val shell = "for x in tinycap tinymix arecord; do command -v \$x 2>/dev/null || true; done" }
-    data class StartScreenrecord(val args: List<String>) : RootCommand {
+
+    data class StartScreenrecord(val args: List<String>, val pidFile: String) : RootCommand {
         override val shell: String = buildString {
-            append("exec /system/bin/screenrecord")
+            append("rm -f ").append(shellQuote(pidFile)).append("; ")
+            append("/system/bin/screenrecord")
             args.forEach { append(' ').append(shellQuote(it)) }
+            append(" & zaid_pid=\$!; ")
+            append("printf '%s\\n' \"\$zaid_pid\" > ").append(shellQuote(pidFile)).append("; ")
+            append("wait \"\$zaid_pid\"")
         }
+    }
+
+    data class SignalPidFile(val pidFile: String, val signal: String) : RootCommand {
+        override val shell: String = buildString {
+            append("pid=\$(cat ").append(shellQuote(pidFile)).append(" 2>/dev/null || true); ")
+            append("if [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null; then kill -")
+            append(signal)
+            append(" \"\$pid\"; fi")
+        }
+    }
+
+    data class PidFileStatus(val pidFile: String) : RootCommand {
+        override val shell: String = buildString {
+            append("pid=\$(cat ").append(shellQuote(pidFile)).append(" 2>/dev/null || true); ")
+            append("if [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null; then echo alive:\$pid; exit 0; else echo dead; exit 1; fi")
+        }
+    }
+
+    data class RemoveRootFile(val path: String) : RootCommand {
+        override val shell: String = "rm -f ${shellQuote(path)}"
     }
 
     companion object {
@@ -67,6 +92,7 @@ class RootManager {
 
     fun startLongRunning(command: RootCommand.StartScreenrecord, logFile: File): Process {
         logFile.parentFile?.mkdirs()
+        logFile.appendText("root-command: ${command.shell}\n")
         return ProcessBuilder("su", "-c", command.shell)
             .redirectErrorStream(true)
             .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
