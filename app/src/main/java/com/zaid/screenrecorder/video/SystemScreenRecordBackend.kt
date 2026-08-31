@@ -37,15 +37,53 @@ class SystemScreenRecordBackend(private val root: RootManager) : VideoCaptureBac
         cli.sizeFlag?.let { args += listOf(it, "${config.width}x${config.height}") }
         cli.bitRateFlag?.let { args += listOf(it, config.videoBitrate.toString()) }
         cli.frameRateFlag?.let { args += listOf(it, config.fps.toString()) }
+        if ("--time-limit" in cli.rawHelp) args += listOf("--time-limit", "0")
         if (config.codec == VideoCodec.HEVC && cli.codecFlag != null && cli.hevc) args += listOf(cli.codecFlag, "hevc")
         args += output.absolutePath
-        val process = root.startLongRunning(RootCommand.StartScreenrecord(args), logFile)
-        return VideoCaptureHandle(output, process, SystemClock.elapsedRealtimeNanos())
+
+        val pidFile = File(output.parentFile ?: logFile.parentFile, ".${output.name}.pid")
+        val command = RootCommand.StartScreenrecord(args, pidFile.absolutePath)
+        val process = root.startLongRunning(command, logFile)
+
+        if (process.waitFor(900, TimeUnit.MILLISECONDS)) {
+            root.execute(RootCommand.RemoveRootFile(pidFile.absolutePath), 2)
+            error(startFailure(logFile, "screenrecord exited immediately with code ${runCatching { process.exitValue() }.getOrDefault(-1)}"))
+        }
+        val status = root.execute(RootCommand.PidFileStatus(pidFile.absolutePath), 3)
+        if (status.code != 0) {
+            runCatching { process.destroyForcibly() }
+            root.execute(RootCommand.RemoveRootFile(pidFile.absolutePath), 2)
+            error(startFailure(logFile, "root screenrecord PID was not alive after startup"))
+        }
+
+        return VideoCaptureHandle(output, process, SystemClock.elapsedRealtimeNanos(), pidFile, logFile)
     }
 
     override fun stop(handle: VideoCaptureHandle) {
-        runCatching { handle.process.destroy() }
-        runCatching { handle.process.waitFor(4, TimeUnit.SECONDS) }
+        val pidFile = handle.pidFile
+        if (pidFile != null) {
+            root.execute(RootCommand.SignalPidFile(pidFile.absolutePath, "INT"), 3)
+            if (!handle.process.waitFor(6, TimeUnit.SECONDS)) {
+                root.execute(RootCommand.SignalPidFile(pidFile.absolutePath, "TERM"), 2)
+                if (!handle.process.waitFor(2, TimeUnit.SECONDS)) {
+                    root.execute(RootCommand.SignalPidFile(pidFile.absolutePath, "KILL"), 2)
+                    handle.process.waitFor(1, TimeUnit.SECONDS)
+                }
+            }
+            root.execute(RootCommand.RemoveRootFile(pidFile.absolutePath), 2)
+        } else {
+            runCatching { handle.process.destroy() }
+            runCatching { handle.process.waitFor(4, TimeUnit.SECONDS) }
+        }
         if (handle.process.isAlive) runCatching { handle.process.destroyForcibly() }
+
+        check(handle.videoFile.exists() && handle.videoFile.length() > 1024L) {
+            startFailure(handle.logFile, "screenrecord did not produce a valid MP4 payload")
+        }
+    }
+
+    private fun startFailure(logFile: File?, prefix: String): String {
+        val tail = runCatching { logFile?.takeIf { it.exists() }?.readText()?.takeLast(4_000).orEmpty() }.getOrDefault("")
+        return if (tail.isBlank()) prefix else "$prefix\n$tail"
     }
 }
