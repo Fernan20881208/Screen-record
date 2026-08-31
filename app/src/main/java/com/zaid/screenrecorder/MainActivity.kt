@@ -1,12 +1,18 @@
 package com.zaid.screenrecorder
 
+import android.Manifest
+import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -68,6 +74,48 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        var pendingFps = 60
+        var pendingBitrate = 8_000_000
+
+        fun startRecorder(resultCode: Int? = null, projectionData: Intent? = null) {
+            val service = Intent(this, RecordingService::class.java)
+                .setAction(RecordingService.ACTION_START)
+                .putExtra(RecordingService.EXTRA_FPS, pendingFps)
+                .putExtra(RecordingService.EXTRA_BITRATE, pendingBitrate)
+            if (resultCode != null && projectionData != null) {
+                service.putExtra(RecordingService.EXTRA_PROJECTION_RESULT_CODE, resultCode)
+                service.putExtra(RecordingService.EXTRA_PROJECTION_DATA, projectionData)
+            }
+            ContextCompat.startForegroundService(this, service)
+            moveTaskToBack(true)
+        }
+
+        val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            if (result.resultCode == Activity.RESULT_OK && data != null) {
+                startRecorder(result.resultCode, data)
+            } else {
+                Toast.makeText(this, "Se necesita permiso de captura para grabar el audio interno.", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        lateinit var requestProjection: () -> Unit
+        val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) requestProjection()
+            else Toast.makeText(this, "RECORD_AUDIO es necesario para capturar el audio interno.", Toast.LENGTH_LONG).show()
+        }
+
+        requestProjection = {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val manager = getSystemService(MediaProjectionManager::class.java)
+                projectionLauncher.launch(manager.createScreenCaptureIntent())
+            } else {
+                Toast.makeText(this, "Audio interno requiere Android 10 o superior; se grabará solo video.", Toast.LENGTH_LONG).show()
+                startRecorder()
+            }
+        }
+
         setContent {
             ZaidApp(
                 onStart = { fps, bitrate ->
@@ -75,14 +123,13 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this, "Permite Mostrar sobre otras apps para usar los controles flotantes.", Toast.LENGTH_LONG).show()
                         startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                     } else {
-                        ContextCompat.startForegroundService(
-                            this,
-                            Intent(this, RecordingService::class.java)
-                                .setAction(RecordingService.ACTION_START)
-                                .putExtra(RecordingService.EXTRA_FPS, fps)
-                                .putExtra(RecordingService.EXTRA_BITRATE, bitrate)
-                        )
-                        moveTaskToBack(true)
+                        pendingFps = fps
+                        pendingBitrate = bitrate
+                        if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            requestProjection()
+                        }
                     }
                 },
                 onStop = { startService(Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) }
@@ -185,9 +232,12 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                     MiniCard("Resolución", "1280×720", Modifier.weight(1f)); MiniCard("Bitrate", "${selectedBitrate / 1_000_000} Mbps", Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz", Modifier.weight(1f))
+                    MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz interno", Modifier.weight(1f))
                 }
-                GlassCard { Text("Grabaciones", fontWeight = FontWeight.Bold); Text("Los MP4 finalizados se guardan en la carpeta de la app y se indexan con MediaScanner.", color = Color.White.copy(alpha = .65f)) }
+                GlassCard {
+                    Text("Grabaciones", fontWeight = FontWeight.Bold)
+                    Text("Los MP4 se validan antes de guardarse. Si el mux falla, la app muestra el error en vez de conservar un archivo corrupto.", color = Color.White.copy(alpha = .65f))
+                }
                 GlassCard { Text("Estadísticas", fontWeight = FontWeight.Bold); Text(status.message ?: "Al finalizar se calculan FPS promedio y mínimo a partir de timestamps reales del MP4; dropped frames sólo se muestran si el backend reporta un contador verificable.", color = Color.White.copy(alpha = .65f)) }
                 GlassCard {
                     Text("Overlay Liquid Glass", fontWeight = FontWeight.Bold)
@@ -195,6 +245,10 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                     if (!Settings.canDrawOverlays(context)) {
                         Button(onClick = { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) }) { Text("Permitir overlay") }
                     }
+                }
+                GlassCard {
+                    Text("Audio interno", fontWeight = FontWeight.Bold)
+                    Text("Android pedirá permiso de captura al iniciar. Se usa AudioPlaybackCapture para audio multimedia/juegos compatible; algunas apps pueden bloquear su audio por política del sistema.", color = Color.White.copy(alpha = .65f))
                 }
                 GlassCard {
                     Text("Ajustes", fontWeight = FontWeight.Bold)
