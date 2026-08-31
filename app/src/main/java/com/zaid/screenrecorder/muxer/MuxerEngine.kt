@@ -105,7 +105,12 @@ class MuxerEngine {
             if (size < 0) break
             val pts = extractor.sampleTime
             if (firstPts < 0) firstPts = pts
-            info.set(0, size, (pts - firstPts).coerceAtLeast(0L) + offsetUs, extractor.sampleFlags)
+            info.set(
+                0,
+                size,
+                (pts - firstPts).coerceAtLeast(0L) + offsetUs,
+                extractorFlagsToCodecFlags(extractor.sampleFlags)
+            )
             muxer.writeSampleData(targetTrack, buffer, info)
             extractor.advance()
         }
@@ -144,12 +149,23 @@ class MuxerEngine {
                 val size = extractor.readSampleData(buffer, 0)
                 if (size < 0) break
                 val pts = (extractor.sampleTime - segmentFirstPts).coerceAtLeast(0L) + timelineUs
-                info.set(0, size, pts, extractor.sampleFlags)
+                info.set(0, size, pts, extractorFlagsToCodecFlags(extractor.sampleFlags))
                 muxer.writeSampleData(targetTrack, buffer, info)
                 extractor.advance()
             }
         } finally {
             extractor.release()
         }
+    }
+
+    private fun extractorFlagsToCodecFlags(sampleFlags: Int): Int {
+        var codecFlags = 0
+        if (sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+            codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+        }
+        if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
+            codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
+        }
+        return codecFlags
     }
 }
