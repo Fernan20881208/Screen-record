@@ -87,8 +87,10 @@ class MainActivity : ComponentActivity() {
                 service.putExtra(RecordingService.EXTRA_PROJECTION_RESULT_CODE, resultCode)
                 service.putExtra(RecordingService.EXTRA_PROJECTION_DATA, projectionData)
             }
+            // Keep the activity visible until RecordingService confirms that MediaProjection,
+            // microphone and playback capture are already active. This avoids Android 14+
+            // while-in-use microphone restrictions during foreground-service startup.
             ContextCompat.startForegroundService(this, service)
-            moveTaskToBack(true)
         }
 
         val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -103,7 +105,7 @@ class MainActivity : ComponentActivity() {
         lateinit var requestProjection: () -> Unit
         val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) requestProjection()
-            else Toast.makeText(this, "RECORD_AUDIO es necesario para capturar el audio interno.", Toast.LENGTH_LONG).show()
+            else Toast.makeText(this, "RECORD_AUDIO es necesario para capturar audio interno y micrófono.", Toast.LENGTH_LONG).show()
         }
 
         requestProjection = {
@@ -111,7 +113,7 @@ class MainActivity : ComponentActivity() {
                 val manager = getSystemService(MediaProjectionManager::class.java)
                 projectionLauncher.launch(manager.createScreenCaptureIntent())
             } else {
-                Toast.makeText(this, "Audio interno requiere Android 10 o superior; se grabará solo video.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Audio interno requiere Android 10 o superior; se grabará solo video/micrófono según disponibilidad.", Toast.LENGTH_LONG).show()
                 startRecorder()
             }
         }
@@ -149,6 +151,10 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
     var selectedBitrate by remember { mutableIntStateOf(8_000_000) }
     var profile by remember { mutableStateOf("Eficiente") }
 
+    LaunchedEffect(status.active) {
+        if (status.active) (context as? Activity)?.moveTaskToBack(true)
+    }
+
     LaunchedEffect(Unit) {
         val detected = withContext(Dispatchers.IO) {
             val root = RootManager()
@@ -185,7 +191,7 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                             when {
                                 status.paused -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · PAUSA"
                                 status.active -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · grabando"
-                                else -> "720p · $selectedFps FPS · Audio interno"
+                                else -> "720p · $selectedFps FPS · Interno + mic"
                             },
                             color = Color.White.copy(alpha = .72f)
                         )
@@ -232,7 +238,7 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                     MiniCard("Resolución", "1280×720", Modifier.weight(1f)); MiniCard("Bitrate", "${selectedBitrate / 1_000_000} Mbps", Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz interno", Modifier.weight(1f))
+                    MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz mixto", Modifier.weight(1f))
                 }
                 GlassCard {
                     Text("Grabaciones", fontWeight = FontWeight.Bold)
@@ -247,8 +253,8 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                     }
                 }
                 GlassCard {
-                    Text("Audio interno", fontWeight = FontWeight.Bold)
-                    Text("Android pedirá permiso de captura al iniciar. Se usa AudioPlaybackCapture para audio multimedia/juegos compatible; algunas apps pueden bloquear su audio por política del sistema.", color = Color.White.copy(alpha = .65f))
+                    Text("Audio interno + micrófono", fontWeight = FontWeight.Bold)
+                    Text("Android pedirá MediaProjection y RECORD_AUDIO al iniciar. El audio del juego y el micrófono se capturan en hilos independientes, se mezclan en PCM y se codifican juntos a AAC para mantener una sola línea de tiempo estable.", color = Color.White.copy(alpha = .65f))
                 }
                 GlassCard {
                     Text("Ajustes", fontWeight = FontWeight.Bold)
