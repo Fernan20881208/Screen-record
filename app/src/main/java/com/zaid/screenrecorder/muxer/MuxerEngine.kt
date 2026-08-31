@@ -68,7 +68,7 @@ class MuxerEngine {
         val valid = segments.filter { isPlayable(it) }
         check(valid.isNotEmpty()) { "No playable recording segments" }
         output.parentFile?.mkdirs()
-        if (valid.size == 1) return copyValidated(valid.first(), output)
+        if (valid.size == 1) return finalizeForAndroidPlayback(copyValidated(valid.first(), output))
 
         val first = MediaExtractor().apply { setDataSource(valid.first().absolutePath) }
         val firstVideo = findTrack(first, "video/")
@@ -117,7 +117,7 @@ class MuxerEngine {
             output.delete()
             "Concatenation produced an invalid MP4"
         }
-        return output
+        return finalizeForAndroidPlayback(output)
     }
 
     fun isPlayable(file: File): Boolean {
@@ -156,6 +156,18 @@ class MuxerEngine {
         check(isPlayable(output)) {
             output.delete()
             "Copied MP4 failed playback validation"
+        }
+        return output
+    }
+
+    private fun finalizeForAndroidPlayback(output: File): File {
+        check(FastStartOptimizer.optimizeInPlace(output)) {
+            output.delete()
+            "Could not relocate MP4 moov atom for Android-compatible playback"
+        }
+        check(isPlayable(output)) {
+            output.delete()
+            "Fast-start MP4 failed playback validation"
         }
         return output
     }
