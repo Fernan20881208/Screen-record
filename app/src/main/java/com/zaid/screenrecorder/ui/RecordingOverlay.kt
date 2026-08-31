@@ -5,6 +5,8 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -21,6 +23,7 @@ import kotlin.math.roundToInt
 class RecordingOverlay(private val context: Context) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private val prefs = context.getSharedPreferences("recording-overlay", Context.MODE_PRIVATE)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var rootView: LinearLayout? = null
     private var statusView: TextView? = null
     private var pauseButton: TextView? = null
@@ -29,7 +32,31 @@ class RecordingOverlay(private val context: Context) {
     private var elapsedMs: Long = 0L
     private var paused: Boolean = false
 
-    fun show(config: RecordingConfig, paused: Boolean = false) {
+    fun show(config: RecordingConfig, paused: Boolean = false) = onMain {
+        showOnMain(config, paused)
+    }
+
+    fun update(elapsedMs: Long, paused: Boolean) = onMain {
+        this.elapsedMs = elapsedMs
+        this.paused = paused
+        renderOnMain()
+    }
+
+    fun setPaused(paused: Boolean) = onMain {
+        this.paused = paused
+        renderOnMain()
+    }
+
+    fun hide() = onMain {
+        rootView?.let { runCatching { wm.removeView(it) } }
+        rootView = null
+        statusView = null
+        pauseButton = null
+        params = null
+        config = null
+    }
+
+    private fun showOnMain(config: RecordingConfig, paused: Boolean) {
         if (!Settings.canDrawOverlays(context) || rootView != null) return
         this.config = config
         this.paused = paused
@@ -93,30 +120,10 @@ class RecordingOverlay(private val context: Context) {
         statusView = status
         pauseButton = pause
         params = layout
-        render()
+        renderOnMain()
     }
 
-    fun update(elapsedMs: Long, paused: Boolean) {
-        this.elapsedMs = elapsedMs
-        this.paused = paused
-        render()
-    }
-
-    fun setPaused(paused: Boolean) {
-        this.paused = paused
-        render()
-    }
-
-    fun hide() {
-        rootView?.let { runCatching { wm.removeView(it) } }
-        rootView = null
-        statusView = null
-        pauseButton = null
-        params = null
-        config = null
-    }
-
-    private fun render() {
+    private fun renderOnMain() {
         val current = config ?: return
         val seconds = elapsedMs / 1000L
         val time = "%02d:%02d".format(seconds / 60L, seconds % 60L)
@@ -182,6 +189,10 @@ class RecordingOverlay(private val context: Context) {
                 else -> false
             }
         }
+    }
+
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
     }
 
     private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).roundToInt()
