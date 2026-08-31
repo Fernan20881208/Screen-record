@@ -2,7 +2,6 @@ package com.zaid.screenrecorder.video
 
 import android.content.Context
 import android.hardware.display.DisplayManager
-import android.os.Build
 import android.view.Display
 import com.zaid.screenrecorder.root.RootCommand
 import com.zaid.screenrecorder.root.RootManager
@@ -29,7 +28,8 @@ data class DisplayCapabilities(
 class DisplayCapabilityDetector(private val context: Context, private val root: RootManager) {
     fun detect(): DisplayCapabilities {
         val manager = context.getSystemService(DisplayManager::class.java)
-        @Suppress("DEPRECATION") val display = manager.getDisplay(Display.DEFAULT_DISPLAY)
+        @Suppress("DEPRECATION")
+        val display = manager.getDisplay(Display.DEFAULT_DISPLAY) ?: error("Default display unavailable")
         val current = display.mode
         val metrics = context.resources.displayMetrics
         val modes = display.supportedModes.map { DisplayModeInfo(it.physicalWidth, it.physicalHeight, it.refreshRate) }

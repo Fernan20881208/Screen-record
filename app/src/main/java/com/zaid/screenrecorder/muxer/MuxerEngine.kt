@@ -2,6 +2,7 @@ package com.zaid.screenrecorder.muxer
 
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import java.io.File
 import java.nio.ByteBuffer
@@ -26,6 +27,7 @@ class MuxerEngine {
         videoExtractor.selectTrack(vSource)
         audioExtractor.selectTrack(aSource)
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        readRotation(video)?.takeIf { it in setOf(90, 180, 270) }?.let(muxer::setOrientationHint)
         val vTarget = muxer.addTrack(videoExtractor.getTrackFormat(vSource))
         val aTarget = muxer.addTrack(audioExtractor.getTrackFormat(aSource))
         muxer.start()
@@ -37,6 +39,16 @@ class MuxerEngine {
         videoExtractor.release()
         audioExtractor.release()
         return output
+    }
+
+    private fun readRotation(video: File): Int? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(video.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()
+        } finally {
+            retriever.release()
+        }
     }
 
     private fun findTrack(extractor: MediaExtractor, prefix: String): Int = (0 until extractor.trackCount).firstOrNull {

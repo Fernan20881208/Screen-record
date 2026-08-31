@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.media.MediaScannerConnection
 import android.os.Environment
 import android.os.IBinder
@@ -155,12 +156,13 @@ class RecordingService : Service() {
         val stopPending = PendingIntent.getService(this, 9, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val seconds = elapsedMs / 1000
         val time = "%02d:%02d".format(Locale.US, seconds / 60, seconds % 60)
+        val stopIcon = Icon.createWithResource(this, R.drawable.ic_stat_record)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_record)
             .setContentTitle("Zaid Screen Recorder · $status")
             .setContentText("$time · ${config.width}x${config.height} · target ${config.fps} FPS · ${config.videoBitrate / 1_000_000} Mbps · ${config.codec}")
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Detener", stopPending).build())
+            .addAction(Notification.Action.Builder(stopIcon, "Detener", stopPending).build())
             .build()
     }
 
