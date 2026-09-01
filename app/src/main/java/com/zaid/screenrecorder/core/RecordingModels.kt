@@ -15,7 +15,7 @@ data class RecordingConfig(
     val audioChannels: Int = 2,
     val audioBitrate: Int = 256_000,
     val gameMode: Boolean = true,
-    val showOverlay: Boolean = false
+    val showOverlay: Boolean = true
 )
 
 data class RecordingStats(
@@ -30,6 +30,7 @@ data class RecordingStats(
 
 data class RecordingStatus(
     val active: Boolean = false,
+    val paused: Boolean = false,
     val elapsedMs: Long = 0,
     val effectiveConfig: RecordingConfig = RecordingConfig(),
     val actualFps: Double? = null,

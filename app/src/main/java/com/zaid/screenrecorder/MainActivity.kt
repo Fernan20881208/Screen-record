@@ -1,11 +1,18 @@
 package com.zaid.screenrecorder
 
+import android.Manifest
+import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -40,14 +47,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.zaid.screenrecorder.audio.AudioCaptureEngine
 import com.zaid.screenrecorder.audio.AudioFlingerBackend
+import com.zaid.screenrecorder.audio.AudioPolicyLoopback
 import com.zaid.screenrecorder.audio.MicrophoneBackend
 import com.zaid.screenrecorder.audio.RootAudioBackend
 import com.zaid.screenrecorder.audio.VendorAudioBackend
@@ -63,17 +73,38 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        var pendingFps = 60
+        var pendingBitrate = 8_000_000
+
+        fun startRecorder() {
+            val service = Intent(this, RecordingService::class.java)
+                .setAction(RecordingService.ACTION_START)
+                .putExtra(RecordingService.EXTRA_FPS, pendingFps)
+                .putExtra(RecordingService.EXTRA_BITRATE, pendingBitrate)
+            ContextCompat.startForegroundService(this, service)
+        }
+
+        val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) startRecorder()
+            else Toast.makeText(this, "RECORD_AUDIO es necesario para mezclar el micrófono.", Toast.LENGTH_LONG).show()
+        }
+
         setContent {
             ZaidApp(
                 onStart = { fps, bitrate ->
-                    ContextCompat.startForegroundService(
-                        this,
-                        Intent(this, RecordingService::class.java)
-                            .setAction(RecordingService.ACTION_START)
-                            .putExtra(RecordingService.EXTRA_FPS, fps)
-                            .putExtra(RecordingService.EXTRA_BITRATE, bitrate)
-                    )
-                    moveTaskToBack(true)
+                    if (!Settings.canDrawOverlays(this)) {
+                        Toast.makeText(this, "Permite Mostrar sobre otras apps para usar los controles flotantes.", Toast.LENGTH_LONG).show()
+                        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                    } else {
+                        pendingFps = fps
+                        pendingBitrate = bitrate
+                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            startRecorder()
+                        }
+                    }
                 },
                 onStop = { startService(Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) }
             )
@@ -81,7 +112,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class UiCapabilities(val root: Boolean, val rootLabel: String, val supportedFps: Set<Int>, val detail: String)
+private data class UiCapabilities(
+    val root: Boolean,
+    val rootLabel: String,
+    val supportedFps: Set<Int>,
+    val detail: String,
+    val privilegedAudio: Boolean,
+    val privilegedAudioDetail: String
+)
 
 @Composable
 private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
@@ -92,19 +130,25 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
     var selectedBitrate by remember { mutableIntStateOf(8_000_000) }
     var profile by remember { mutableStateOf("Eficiente") }
 
+    LaunchedEffect(status.active) {
+        if (status.active) (context as? Activity)?.moveTaskToBack(true)
+    }
+
     LaunchedEffect(Unit) {
         val detected = withContext(Dispatchers.IO) {
             val root = RootManager()
             val state = root.detect()
-            if (!state.available) UiCapabilities(false, "Sin root", emptySet(), state.detail)
-            else {
+            val audioPolicy = AudioPolicyLoopback(context).probe()
+            if (!state.available) {
+                UiCapabilities(false, "Sin root", emptySet(), state.detail, audioPolicy.available, audioPolicy.detail)
+            } else {
                 val display = DisplayCapabilityDetector(context, root).detect()
                 val encoders = EncoderCapabilityDetector().detect()
                 val backend = SystemScreenRecordBackend(root).probe(display, encoders)
                 val supported = backend.supportedFrameRates
                     .intersect(encoders.supportedFps(com.zaid.screenrecorder.core.VideoCodec.AVC))
                     .intersect(display.refreshCandidates())
-                UiCapabilities(true, state.implementation.name, supported, backend.detail)
+                UiCapabilities(true, state.implementation.name, supported, backend.detail, audioPolicy.available, audioPolicy.detail)
             }
         }
         caps = detected
@@ -116,8 +160,24 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
             Box(Modifier.size(300.dp).align(Alignment.TopEnd).blur(if (status.active) 0.dp else 80.dp).background(Color(0x554D7CFE), CircleShape))
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Spacer(Modifier.height(16.dp))
-                Text("Zaid Screen Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(if (status.active) "${status.effectiveConfig.height}p · target ${status.effectiveConfig.fps} FPS · grabando" else "720p · $selectedFps FPS · Audio interno", color = Color.White.copy(alpha = .72f))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Image(
+                        painter = painterResource(R.drawable.zaid_logo),
+                        contentDescription = "Zaid Screen Recorder",
+                        modifier = Modifier.size(58.dp).clip(CircleShape)
+                    )
+                    Column {
+                        Text("Zaid Screen Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            when {
+                                status.paused -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · PAUSA"
+                                status.active -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · grabando"
+                                else -> "720p · $selectedFps FPS · AudioPolicy + mic"
+                            },
+                            color = Color.White.copy(alpha = .72f)
+                        )
+                    }
+                }
 
                 caps?.let { c ->
                     if (!c.root) GlassCard { Text("Zaid Screen Recorder requiere acceso root para utilizar su motor de captura avanzado.", color = Color(0xFFFFB4AB)) }
@@ -125,11 +185,18 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                         Text("ROOT · ${c.rootLabel}", fontWeight = FontWeight.SemiBold)
                         Text(c.detail, color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.bodySmall)
                     }
+                    GlassCard {
+                        Text("AUDIO POLICY", fontWeight = FontWeight.SemiBold)
+                        Text(c.privilegedAudioDetail, color = if (c.privilegedAudio) Color.White.copy(alpha = .75f) else Color(0xFFFFB4AB), style = MaterialTheme.typography.bodySmall)
+                        if (!c.privilegedAudio) {
+                            Text("Instala el módulo root incluido en el release y reinicia; el APK normal no puede recibir estos permisos privilegiados.", color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
 
                 Button(
                     onClick = { if (status.active) onStop() else onStart(selectedFps, selectedBitrate) },
-                    enabled = caps?.root == true,
+                    enabled = status.active || (caps?.root == true && caps?.privilegedAudio == true),
                     modifier = Modifier.fillMaxWidth().height(86.dp),
                     shape = RoundedCornerShape(28.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (status.active) Color(0xFFB3261E) else Color(0xFFE53935))
@@ -159,18 +226,32 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                     MiniCard("Resolución", "1280×720", Modifier.weight(1f)); MiniCard("Bitrate", "${selectedBitrate / 1_000_000} Mbps", Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz", Modifier.weight(1f))
+                    MiniCard("Codec", "H.264 AVC", Modifier.weight(1f)); MiniCard("Audio", "48 kHz mixto", Modifier.weight(1f))
                 }
-                GlassCard { Text("Grabaciones", fontWeight = FontWeight.Bold); Text("Los MP4 finalizados se guardan en la carpeta de la app y se indexan con MediaScanner.", color = Color.White.copy(alpha = .65f)) }
+                GlassCard {
+                    Text("Grabaciones", fontWeight = FontWeight.Bold)
+                    Text("Los MP4 se validan antes de guardarse. Si el mux falla, la app muestra el error en vez de conservar un archivo corrupto.", color = Color.White.copy(alpha = .65f))
+                }
                 GlassCard { Text("Estadísticas", fontWeight = FontWeight.Bold); Text(status.message ?: "Al finalizar se calculan FPS promedio y mínimo a partir de timestamps reales del MP4; dropped frames sólo se muestran si el backend reporta un contador verificable.", color = Color.White.copy(alpha = .65f)) }
                 GlassCard {
+                    Text("Overlay Liquid Glass", fontWeight = FontWeight.Bold)
+                    Text("Activado por defecto. Incluye logo, tiempo, pausar, resumir y terminar. Puedes arrastrarlo y recuerda su última posición. La pausa usa segmentos para no depender de funciones inexistentes de screenrecord.", color = Color.White.copy(alpha = .65f))
+                    if (!Settings.canDrawOverlays(context)) {
+                        Button(onClick = { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) }) { Text("Permitir overlay") }
+                    }
+                }
+                GlassCard {
+                    Text("Audio interno + micrófono", fontWeight = FontWeight.Bold)
+                    Text("No usa MediaProjection. El módulo root instala la app como priv-app y habilita AudioPolicy LOOP_BACK|RENDER sobre Remote Submix. El submix y el micrófono se leen en hilos independientes y se mezclan a una sola pista AAC.", color = Color.White.copy(alpha = .65f))
+                }
+                GlassCard {
                     Text("Ajustes", fontWeight = FontWeight.Bold)
-                    Text("Game Recording Mode activo · Liquid Glass se reduce automáticamente durante la grabación · overlay desactivado por defecto.", color = Color.White.copy(alpha = .65f))
+                    Text("Game Recording Mode activo · Liquid Glass se simplifica durante la grabación para priorizar el juego.", color = Color.White.copy(alpha = .65f))
                     Button(onClick = {
                         val root = RootManager()
                         val display = DisplayCapabilityDetector(context, root)
                         val enc = EncoderCapabilityDetector()
-                        val audio = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend())
+                        val audio = AudioCaptureEngine(listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)), MicrophoneBackend(context))
                         val file = DiagnosticsExporter(context, root, display, enc, audio).export()
                         Toast.makeText(context, "Diagnóstico: ${file.absolutePath}", Toast.LENGTH_LONG).show()
                     }) { Text("Exportar diagnóstico") }

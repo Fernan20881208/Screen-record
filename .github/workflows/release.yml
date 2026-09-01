@@ -1,9 +1,8 @@
-name: Android Release
+name: Publish v1.0.0
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main ]
 
 permissions:
   contents: write
@@ -12,69 +11,88 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    env:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android SDK
-        run: yes | sdkmanager "platforms;android-37" "build-tools;36.0.0"
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.5.0'
-      - name: Test and lint
-        run: gradle :app:testDebugUnitTest :app:lintDebug --stacktrace
-      - name: Build signed release or debug fallback
-        id: build
-        shell: bash
+
+      - name: Verify release build
         run: |
-          set -euo pipefail
-          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ] && [ -n "${KEY_PASSWORD:-}" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/zaid-release.jks"
-            gradle :app:assembleRelease --stacktrace \
-              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/zaid-release.jks" \
-              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
-              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
-            echo "variant=release" >> "$GITHUB_OUTPUT"
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Signing secrets are absent; producing debug fallback APKs."
-            gradle :app:assembleDebug --stacktrace
-            echo "variant=debug" >> "$GITHUB_OUTPUT"
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Package release assets
+          gradle :app:testDebugUnitTest --stacktrace
+          gradle :app:lintRelease --stacktrace
+          gradle :app:assembleRelease --stacktrace
+
+      - name: Collect universal APK
         shell: bash
-        env:
-          VARIANT: ${{ steps.build.outputs.variant }}
-          SIGNED: ${{ steps.build.outputs.signed }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          TAG="${GITHUB_REF_NAME}"
-          for apk in app/build/outputs/apk/${VARIANT}/*.apk; do
-            [ -f "$apk" ] || continue
-            name=$(basename "$apk")
-            abi="${name#app-}"
-            abi="${abi%-${VARIANT}.apk}"
-            if [ "$abi" = "universal" ]; then
-              if [ "$SIGNED" = "true" ]; then out="Zaid-Screen-Recorder-${TAG}-universal.apk"; else out="Zaid-Screen-Recorder-${TAG}-universal-debug.apk"; fi
-            else
-              if [ "$SIGNED" = "true" ]; then out="Zaid-Screen-Recorder-${TAG}-${abi}.apk"; else out="Zaid-Screen-Recorder-${TAG}-${abi}-debug.apk"; fi
-            fi
-            cp "$apk" "dist/$out"
-          done
-          ls -lh dist
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: dist/*.apk
-          fail_on_unmatched_files: true
+          universal=$(find app/build/outputs/apk/release -maxdepth 1 -name '*universal*release.apk' | head -n1)
+          test -n "$universal"
+          cp "$universal" dist/Zaid-Screen-Recorder-v1.0.0-universal.apk
+
+      - name: Build Magisk KernelSU privileged module
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-module
+          mkdir -p release-module/system/priv-app/ZaidScreenRecorder
+          cp -a root-module/. release-module/
+          cp dist/Zaid-Screen-Recorder-v1.0.0-universal.apk \
+            release-module/system/priv-app/ZaidScreenRecorder/ZaidScreenRecorder.apk
+          chmod 0755 release-module/customize.sh
+          (cd release-module && zip -qr ../dist/Zaid-Screen-Recorder-v1.0.0-Privileged-AudioPolicy-Module.zip .)
+          test -s dist/Zaid-Screen-Recorder-v1.0.0-Privileged-AudioPolicy-Module.zip
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > dist/RELEASE_NOTES.md <<'EOF'
+          # Zaid Screen Recorder v1.0.0
+
+          First public release.
+
+          ## Audio
+          - Internal audio does not use MediaProjection.
+          - Uses privileged Android AudioPolicy with `AudioMix` route `LOOP_BACK | RENDER` and a Remote Submix `AudioRecord` sink.
+          - Internal PCM and microphone PCM are read independently and mixed into one continuous AAC timeline.
+          - Includes audio health diagnostics in `last-audio.log`.
+
+          ## Root module
+          Internal audio requires the included **Privileged AudioPolicy Module**. Flash the module in Magisk/KernelSU/APatch and reboot. The module installs the same release APK as `/system/priv-app/ZaidScreenRecorder` and supplies the privileged-permission allowlist.
+
+          The standalone APK is included for inspection/installation, but Android will not grant the AudioPolicy capture permissions to a normal user-installed APK.
+
+          ## Video
+          - Root `/system/bin/screenrecord` backend.
+          - Segment-based pause/resume.
+          - MP4 validation and fast-start finalization.
+          - Movable Liquid Glass recording controls.
+          EOF
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.0 >/dev/null 2>&1; then
+            echo 'v1.0.0 already exists; leaving the published release unchanged.'
+            exit 0
+          fi
+          gh release create v1.0.0 \
+            dist/Zaid-Screen-Recorder-v1.0.0-universal.apk \
+            dist/Zaid-Screen-Recorder-v1.0.0-Privileged-AudioPolicy-Module.zip \
+            --target "$GITHUB_SHA" \
+            --title "Zaid Screen Recorder v1.0.0" \
+            --notes-file dist/RELEASE_NOTES.md

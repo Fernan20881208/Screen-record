@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <privapp-permissions package="com.zaid.screenrecorder">
+        <permission name="android.permission.MODIFY_AUDIO_ROUTING" />
+        <permission name="android.permission.CAPTURE_AUDIO_OUTPUT" />
+        <permission name="android.permission.CAPTURE_MEDIA_OUTPUT" />
+        <permission name="android.permission.BYPASS_CONCURRENT_RECORD_AUDIO_RESTRICTION" />
+    </privapp-permissions>
+</permissions>
