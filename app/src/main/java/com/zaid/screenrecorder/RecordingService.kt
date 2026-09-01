@@ -1,6 +1,5 @@
 package com.zaid.screenrecorder
 
-import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,18 +9,15 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.media.MediaScannerConnection
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.os.SystemClock
 import com.zaid.screenrecorder.audio.AudioCaptureEngine
 import com.zaid.screenrecorder.audio.AudioFlingerBackend
+import com.zaid.screenrecorder.audio.AudioPolicyMicMixBackend
 import com.zaid.screenrecorder.audio.AudioSelection
 import com.zaid.screenrecorder.audio.MicrophoneBackend
-import com.zaid.screenrecorder.audio.PlaybackCaptureBackend
-import com.zaid.screenrecorder.audio.PlaybackMicMixBackend
 import com.zaid.screenrecorder.audio.RootAudioBackend
 import com.zaid.screenrecorder.audio.VendorAudioBackend
 import com.zaid.screenrecorder.core.AppState
@@ -55,8 +51,6 @@ class RecordingService : Service() {
         const val ACTION_RESUME = "com.zaid.screenrecorder.RESUME"
         const val EXTRA_FPS = "fps"
         const val EXTRA_BITRATE = "bitrate"
-        const val EXTRA_PROJECTION_RESULT_CODE = "projection_result_code"
-        const val EXTRA_PROJECTION_DATA = "projection_data"
         private const val CHANNEL = "recording"
         private const val NOTIFICATION_ID = 1200
     }
@@ -72,7 +66,6 @@ class RecordingService : Service() {
     @Volatile private var session: RecordingSession? = null
     @Volatile private var stopping = false
     private lateinit var overlay: RecordingOverlay
-    private var mediaProjection: MediaProjection? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -105,52 +98,38 @@ class RecordingService : Service() {
             showOverlay = true
         )
 
-        if (Build.VERSION.SDK_INT >= 29) {
-            val resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, Activity.RESULT_CANCELED)
-            val projectionData = projectionData(intent)
-            if (resultCode != Activity.RESULT_OK || projectionData == null) {
-                AppState.update(RecordingStatus(false, message = "Se necesita permiso MediaProjection para grabar audio interno."))
-                stopSelf()
-                return
-            }
-            try {
-                val foregroundTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                    if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-                startForeground(
+        try {
+            val preparing = notification(config, 0, false, "Preparing…")
+            when {
+                Build.VERSION.SDK_INT >= 34 -> startForeground(
                     NOTIFICATION_ID,
-                    notification(config, 0, false, "Preparing…"),
-                    foregroundTypes
+                    preparing,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 )
-                val manager = getSystemService(MediaProjectionManager::class.java)
-                val projection = manager.getMediaProjection(resultCode, projectionData)
-                mediaProjection = projection
-                audioEngine = AudioCaptureEngine(
-                    listOf(
-                        PlaybackMicMixBackend(this, projection),
-                        PlaybackCaptureBackend(this, projection),
-                        RootAudioBackend(root),
-                        AudioFlingerBackend(root),
-                        VendorAudioBackend(root)
-                    ),
-                    MicrophoneBackend(this)
+                Build.VERSION.SDK_INT >= 30 -> startForeground(
+                    NOTIFICATION_ID,
+                    preparing,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 )
-            } catch (t: Throwable) {
-                AppState.update(RecordingStatus(false, message = "MediaProjection/audio start failed: ${t.message}"))
-                runCatching { mediaProjection?.stop() }
-                mediaProjection = null
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return
+                else -> startForeground(NOTIFICATION_ID, preparing)
             }
-        } else {
-            startForeground(NOTIFICATION_ID, notification(config, 0, false, "Preparing…"))
             audioEngine = defaultAudioEngine()
+        } catch (t: Throwable) {
+            AppState.update(RecordingStatus(false, message = "Foreground/audio setup failed: ${t.message}"))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
         }
 
         worker.execute {
             try {
                 val rootState = root.detect()
                 check(rootState.available) { "Zaid Screen Recorder requiere acceso root para utilizar su motor de captura avanzado." }
+                val audioPolicyCaps = AudioPolicyMicMixBackend(this).probe()
+                check(audioPolicyCaps.available) {
+                    "AudioPolicy privilegiado no disponible: ${audioPolicyCaps.detail}. Instala el módulo root del release y reinicia."
+                }
+
                 val resolved = videoEngine.resolve(config)
                 val parent = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
                 val base = File(parent, "Zaid Screen Recorder").apply { mkdirs() }
@@ -158,6 +137,8 @@ class RecordingService : Service() {
                 val output = File(base, "Zaid-Screen-Recorder-$stamp.mp4")
                 val videoLog = File(filesDir, "logs/last-screenrecord.log")
                 videoLog.parentFile?.mkdirs(); videoLog.writeText("")
+                File(filesDir, "logs/last-audio.log").apply { parentFile?.mkdirs(); writeText("") }
+
                 val current = RecordingSession(
                     config = resolved.config,
                     resolvedVideo = resolved,
@@ -173,8 +154,6 @@ class RecordingService : Service() {
                 ticker = scheduler.scheduleAtFixedRate({ updateTicker() }, 0, 1, TimeUnit.SECONDS)
             } catch (t: Throwable) {
                 AppState.update(RecordingStatus(false, message = t.message ?: "Recording failed"))
-                runCatching { mediaProjection?.stop() }
-                mediaProjection = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -182,16 +161,14 @@ class RecordingService : Service() {
     }
 
     private fun defaultAudioEngine() = AudioCaptureEngine(
-        listOf(RootAudioBackend(root), AudioFlingerBackend(root), VendorAudioBackend(root)),
+        listOf(
+            AudioPolicyMicMixBackend(this),
+            RootAudioBackend(root),
+            AudioFlingerBackend(root),
+            VendorAudioBackend(root)
+        ),
         MicrophoneBackend(this)
     )
-
-    @Suppress("DEPRECATION")
-    private fun projectionData(intent: Intent): Intent? = if (Build.VERSION.SDK_INT >= 33) {
-        intent.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
-    } else {
-        intent.getParcelableExtra(EXTRA_PROJECTION_DATA)
-    }
 
     private fun startSegment(current: RecordingSession): String {
         val index = current.nextSegmentIndex++
@@ -296,8 +273,6 @@ class RecordingService : Service() {
             } finally {
                 session = null
                 stopping = false
-                runCatching { mediaProjection?.stop() }
-                mediaProjection = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -318,7 +293,7 @@ class RecordingService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_record)
             .setContentTitle("Zaid Screen Recorder · $status")
-            .setContentText("$time · ${config.width}x${config.height} · target ${config.fps} FPS · ${config.videoBitrate / 1_000_000} Mbps · internal + mic")
+            .setContentText("$time · ${config.width}x${config.height} · target ${config.fps} FPS · ${config.videoBitrate / 1_000_000} Mbps · AudioPolicy internal + mic")
             .setOngoing(true)
             .addAction(Notification.Action.Builder(icon, if (paused) "Resumir" else "Pausar", pauseResumePending).build())
             .addAction(Notification.Action.Builder(icon, "Detener", stopPending).build())
@@ -337,8 +312,6 @@ class RecordingService : Service() {
             runCatching { session?.resolvedVideo?.backend?.stop(segment.videoHandle) }
             runCatching { segment.audioHandle?.stop() }
         }
-        runCatching { mediaProjection?.stop() }
-        mediaProjection = null
         scheduler.shutdownNow()
         worker.shutdown()
         super.onDestroy()
