@@ -33,13 +33,15 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Keep v1.0.0 unminified: the privileged AudioPolicy backend intentionally uses
+            // reflection/non-SDK class names and HiddenApiBypass. Avoiding R8 also prevents
+            // optional AndroidX Window OEM-extension stubs from blocking an otherwise valid APK.
+            isMinifyEnabled = false
+            isShrinkResources = false
             // Public v1.0.0 CI release: use the Android debug signing config so the produced
             // APK is directly installable. A private production signing key can replace this
             // later without changing the AudioPolicy implementation.
             signingConfig = signingConfigs.getByName("debug")
-            proguardFiles("proguard-rules.pro")
         }
     }
 
