@@ -28,17 +28,17 @@ class AudioCaptureEngine(
             AudioMode.MICROPHONE -> AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Microphone capture active")
             AudioMode.INTERNAL -> {
                 val backend = firstInternalBackend()
-                if (backend == null) AudioSelection(null, null, "Internal audio unavailable on this ROM without MediaProjection; video will continue without audio")
-                else AudioSelection(backend.start(config, output), backend.id, "Internal audio capture active")
+                if (backend == null) AudioSelection(null, null, "Privileged internal-audio backend unavailable; video will continue without internal audio")
+                else AudioSelection(backend.start(config, output), backend.id, "Internal audio capture active · ${backend.id}")
             }
             AudioMode.INTERNAL_AND_MIC -> {
                 val mixed = firstMixedBackend()
                 if (mixed != null) {
-                    AudioSelection(mixed.start(config, output), mixed.id, "Internal audio + microphone software mixer active")
+                    AudioSelection(mixed.start(config, output), mixed.id, "Internal audio + microphone mixer active · ${mixed.id}")
                 } else {
                     val internal = firstInternalBackend()
                     if (internal != null) AudioSelection(internal.start(config, output), internal.id, "Mixed capture unavailable; internal audio active")
-                    else AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Internal audio unavailable; microphone fallback active")
+                    else AudioSelection(microphoneBackend.start(config, output), microphoneBackend.id, "Privileged internal audio unavailable; microphone fallback active")
                 }
             }
         }
