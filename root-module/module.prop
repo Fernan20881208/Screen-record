@@ -1,0 +1,6 @@
+id=zaid-screen-recorder-privileged
+name=Zaid Screen Recorder Privileged Audio
+version=v1.0.0
+versionCode=1
+author=Zaid Navarro
+description=Installs Zaid Screen Recorder as a privileged system app and grants AudioPolicy/Remote Submix permissions for internal audio capture without MediaProjection.
