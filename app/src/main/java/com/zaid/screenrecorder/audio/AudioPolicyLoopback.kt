@@ -25,6 +25,7 @@ class AudioPolicyLoopback(private val context: Context) {
         private const val ROUTE_FLAG_RENDER = 0x1
         private const val ROUTE_FLAG_LOOP_BACK = 0x2
         private const val ROUTE_FLAG_LOOP_BACK_RENDER = ROUTE_FLAG_RENDER or ROUTE_FLAG_LOOP_BACK
+        private const val AUDIO_POLICY_SUCCESS = 0
     }
 
     data class Session(
@@ -100,7 +101,7 @@ class AudioPolicyLoopback(private val context: Context) {
         val audioManager = context.getSystemService(AudioManager::class.java)
         val registerMethod = AudioManager::class.java.getMethod("registerAudioPolicy", policyClass)
         val result = (registerMethod.invoke(audioManager, policy) as Number).toInt()
-        check(result == AudioManager.SUCCESS) {
+        check(result == AUDIO_POLICY_SUCCESS) {
             "AudioPolicy registration failed ($result). Verify the privileged module is active and rebooted."
         }
 
