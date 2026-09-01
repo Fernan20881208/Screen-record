@@ -35,6 +35,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // Public v1.0.0 CI release: use the Android debug signing config so the produced
+            // APK is directly installable. A private production signing key can replace this
+            // later without changing the AudioPolicy implementation.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles("proguard-rules.pro")
         }
     }
@@ -69,6 +73,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
 }
