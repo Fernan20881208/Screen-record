@@ -4,9 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.projection.MediaProjectionManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
@@ -59,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.zaid.screenrecorder.audio.AudioCaptureEngine
 import com.zaid.screenrecorder.audio.AudioFlingerBackend
+import com.zaid.screenrecorder.audio.AudioPolicyLoopback
 import com.zaid.screenrecorder.audio.MicrophoneBackend
 import com.zaid.screenrecorder.audio.RootAudioBackend
 import com.zaid.screenrecorder.audio.VendorAudioBackend
@@ -78,44 +77,17 @@ class MainActivity : ComponentActivity() {
         var pendingFps = 60
         var pendingBitrate = 8_000_000
 
-        fun startRecorder(resultCode: Int? = null, projectionData: Intent? = null) {
+        fun startRecorder() {
             val service = Intent(this, RecordingService::class.java)
                 .setAction(RecordingService.ACTION_START)
                 .putExtra(RecordingService.EXTRA_FPS, pendingFps)
                 .putExtra(RecordingService.EXTRA_BITRATE, pendingBitrate)
-            if (resultCode != null && projectionData != null) {
-                service.putExtra(RecordingService.EXTRA_PROJECTION_RESULT_CODE, resultCode)
-                service.putExtra(RecordingService.EXTRA_PROJECTION_DATA, projectionData)
-            }
-            // Keep the activity visible until RecordingService confirms that MediaProjection,
-            // microphone and playback capture are already active. This avoids Android 14+
-            // while-in-use microphone restrictions during foreground-service startup.
             ContextCompat.startForegroundService(this, service)
         }
 
-        val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val data = result.data
-            if (result.resultCode == Activity.RESULT_OK && data != null) {
-                startRecorder(result.resultCode, data)
-            } else {
-                Toast.makeText(this, "Se necesita permiso de captura para grabar el audio interno.", Toast.LENGTH_LONG).show()
-            }
-        }
-
-        lateinit var requestProjection: () -> Unit
         val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) requestProjection()
-            else Toast.makeText(this, "RECORD_AUDIO es necesario para capturar audio interno y micrófono.", Toast.LENGTH_LONG).show()
-        }
-
-        requestProjection = {
-            if (Build.VERSION.SDK_INT >= 29) {
-                val manager = getSystemService(MediaProjectionManager::class.java)
-                projectionLauncher.launch(manager.createScreenCaptureIntent())
-            } else {
-                Toast.makeText(this, "Audio interno requiere Android 10 o superior; se grabará solo video/micrófono según disponibilidad.", Toast.LENGTH_LONG).show()
-                startRecorder()
-            }
+            if (granted) startRecorder()
+            else Toast.makeText(this, "RECORD_AUDIO es necesario para mezclar el micrófono.", Toast.LENGTH_LONG).show()
         }
 
         setContent {
@@ -127,10 +99,10 @@ class MainActivity : ComponentActivity() {
                     } else {
                         pendingFps = fps
                         pendingBitrate = bitrate
-                        if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         } else {
-                            requestProjection()
+                            startRecorder()
                         }
                     }
                 },
@@ -140,7 +112,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class UiCapabilities(val root: Boolean, val rootLabel: String, val supportedFps: Set<Int>, val detail: String)
+private data class UiCapabilities(
+    val root: Boolean,
+    val rootLabel: String,
+    val supportedFps: Set<Int>,
+    val detail: String,
+    val privilegedAudio: Boolean,
+    val privilegedAudioDetail: String
+)
 
 @Composable
 private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
@@ -159,15 +138,17 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
         val detected = withContext(Dispatchers.IO) {
             val root = RootManager()
             val state = root.detect()
-            if (!state.available) UiCapabilities(false, "Sin root", emptySet(), state.detail)
-            else {
+            val audioPolicy = AudioPolicyLoopback(context).probe()
+            if (!state.available) {
+                UiCapabilities(false, "Sin root", emptySet(), state.detail, audioPolicy.available, audioPolicy.detail)
+            } else {
                 val display = DisplayCapabilityDetector(context, root).detect()
                 val encoders = EncoderCapabilityDetector().detect()
                 val backend = SystemScreenRecordBackend(root).probe(display, encoders)
                 val supported = backend.supportedFrameRates
                     .intersect(encoders.supportedFps(com.zaid.screenrecorder.core.VideoCodec.AVC))
                     .intersect(display.refreshCandidates())
-                UiCapabilities(true, state.implementation.name, supported, backend.detail)
+                UiCapabilities(true, state.implementation.name, supported, backend.detail, audioPolicy.available, audioPolicy.detail)
             }
         }
         caps = detected
@@ -191,7 +172,7 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                             when {
                                 status.paused -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · PAUSA"
                                 status.active -> "${status.effectiveConfig.height}p · ${status.effectiveConfig.fps} FPS target · grabando"
-                                else -> "720p · $selectedFps FPS · Interno + mic"
+                                else -> "720p · $selectedFps FPS · AudioPolicy + mic"
                             },
                             color = Color.White.copy(alpha = .72f)
                         )
@@ -204,11 +185,18 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                         Text("ROOT · ${c.rootLabel}", fontWeight = FontWeight.SemiBold)
                         Text(c.detail, color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.bodySmall)
                     }
+                    GlassCard {
+                        Text("AUDIO POLICY", fontWeight = FontWeight.SemiBold)
+                        Text(c.privilegedAudioDetail, color = if (c.privilegedAudio) Color.White.copy(alpha = .75f) else Color(0xFFFFB4AB), style = MaterialTheme.typography.bodySmall)
+                        if (!c.privilegedAudio) {
+                            Text("Instala el módulo root incluido en el release y reinicia; el APK normal no puede recibir estos permisos privilegiados.", color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
 
                 Button(
                     onClick = { if (status.active) onStop() else onStart(selectedFps, selectedBitrate) },
-                    enabled = caps?.root == true,
+                    enabled = status.active || (caps?.root == true && caps?.privilegedAudio == true),
                     modifier = Modifier.fillMaxWidth().height(86.dp),
                     shape = RoundedCornerShape(28.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (status.active) Color(0xFFB3261E) else Color(0xFFE53935))
@@ -254,7 +242,7 @@ private fun ZaidApp(onStart: (Int, Int) -> Unit, onStop: () -> Unit) {
                 }
                 GlassCard {
                     Text("Audio interno + micrófono", fontWeight = FontWeight.Bold)
-                    Text("Android pedirá MediaProjection y RECORD_AUDIO al iniciar. El audio del juego y el micrófono se capturan en hilos independientes, se mezclan en PCM y se codifican juntos a AAC para mantener una sola línea de tiempo estable.", color = Color.White.copy(alpha = .65f))
+                    Text("No usa MediaProjection. El módulo root instala la app como priv-app y habilita AudioPolicy LOOP_BACK|RENDER sobre Remote Submix. El submix y el micrófono se leen en hilos independientes y se mezclan a una sola pista AAC.", color = Color.White.copy(alpha = .65f))
                 }
                 GlassCard {
                     Text("Ajustes", fontWeight = FontWeight.Bold)
